@@ -1,0 +1,21 @@
+[
+  {
+    "guid": "c02587d5-61e0-415a-a2d5-3ccd3107d112",
+    "name": "Xtream IPTV",
+    "description": "Live TV with guide plus a movie and series catalogue from an Xtream account, with metadata from the Xtream lists.",
+    "overview": "Xtream account as Live TV and a file-less catalogue",
+    "owner": "tommasomeli",
+    "category": "Live TV",
+    "imageUrl": "",
+    "versions": [
+      {
+        "version": "1.0.0.0",
+        "changelog": "https://github.com/tommasomeli/xtream-iptv/releases/tag/v1.0.0",
+        "targetAbi": "12.4.0.0",
+        "sourceUrl": "https://github.com/tommasomeli/xtream-iptv/releases/download/v1.0.0/xtream-iptv-jellyfin_1.0.0.0.zip",
+        "checksum": "5ef056189f18c98b48b271af4c706c76",
+        "timestamp": "2026-10-27T09:45:39Z"
+      }
+    ]
+  }
+]
