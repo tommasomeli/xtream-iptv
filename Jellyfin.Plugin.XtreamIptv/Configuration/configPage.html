@@ -1,0 +1,1277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Xtream IPTV</title>
+</head>
+<body>
+<div id="XtreamIptvConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-select,emby-checkbox">
+    <div data-role="content">
+        <div class="content-primary">
+            <form id="xtForm">
+
+                <style>
+                    #XtreamIptvConfigPage .xtTabs { display: flex; flex-wrap: wrap; gap: 0.25em; border-bottom: 1px solid rgba(128,128,128,0.25); margin-bottom: 1.5em; }
+                    #XtreamIptvConfigPage .xtTab { background: none; border: none; border-bottom: 2px solid transparent; color: inherit; cursor: pointer; font: inherit; font-size: 1em; opacity: 0.7; padding: 0.6em 1em; }
+                    #XtreamIptvConfigPage .xtTab.active { border-bottom-color: #00a4dc; opacity: 1; }
+                    #XtreamIptvConfigPage .xtPanel { display: none; }
+                    #XtreamIptvConfigPage .xtPanel.active { display: block; }
+                    #XtreamIptvConfigPage .xtToolbar { display: flex; flex-wrap: wrap; gap: 0.4em; align-items: center; margin-bottom: 0.5em; }
+                    #XtreamIptvConfigPage .xtToolbar button { margin: 0; }
+                    #XtreamIptvConfigPage .xtFilter { width: 100%; box-sizing: border-box; padding: 0.5em 0.8em; background: transparent; border: 1px solid rgba(128,128,128,0.25); border-radius: 4px; color: inherit; font-size: 0.9em; margin-bottom: 0.5em; }
+                    #XtreamIptvConfigPage .xtCount { font-size: 0.85em; opacity: 0.75; margin-bottom: 0.4em; }
+                    #XtreamIptvConfigPage .xtList { max-height: 380px; overflow-y: auto; border: 1px solid rgba(128,128,128,0.15); border-radius: 4px; padding: 0.5em; }
+                    #XtreamIptvConfigPage .xtRow { display: flex; align-items: center; cursor: pointer; margin: 0.15em 0; }
+                    #XtreamIptvConfigPage .xtRow input { margin-right: 0.5em; }
+                    #XtreamIptvConfigPage .xtMuted { opacity: 0.78; }
+                    #XtreamIptvConfigPage .xtResult { margin-top: 0.5em; min-height: 1em; }
+                    #XtreamIptvConfigPage .xtPill { display: inline-flex; align-items: center; gap: 0.5em; padding: 0.4em 0.8em; border-radius: 4px; border-left: 3px solid; font-size: 0.9em; }
+                    #XtreamIptvConfigPage .xtPill.ok { border-color: #52B54B; background: rgba(82,181,75,0.08); }
+                    #XtreamIptvConfigPage .xtPill.err { border-color: #cc3333; background: rgba(204,51,51,0.08); }
+                    #XtreamIptvConfigPage .xtPill.info { border-color: #888; background: rgba(128,128,128,0.08); }
+                    #XtreamIptvConfigPage .xtStatusBox { border: 1px solid rgba(128,128,128,0.2); border-radius: 6px; padding: 0.9em 1.1em; margin: 0.8em 0; line-height: 1.6; }
+                    #XtreamIptvConfigPage .xtStatusBox code { font-size: 0.9em; }
+                    #XtreamIptvConfigPage .xtWarn { color: #e0a030; }
+                    #XtreamIptvConfigPage .xtNote { border: 1px dashed rgba(128,128,128,0.35); border-radius: 6px; padding: 0.8em 1em; margin-top: 1em; line-height: 1.5; }
+                    #XtreamIptvConfigPage .xtNote ul { margin: 0.4em 0 0 1.2em; padding: 0; }
+                    #XtreamIptvConfigPage .xtSave { margin-top: 1.5em; }
+                    #XtreamIptvConfigPage .xtSubTitle { font-size: 1em; margin-top: 1.2em; }
+                </style>
+
+                <h2 class="sectionTitle">Xtream IPTV</h2>
+
+                <div class="xtTabs">
+                    <button type="button" class="xtTab active" data-tab="connection">Connection</button>
+                    <button type="button" class="xtTab" data-tab="livetv">Live TV</button>
+                    <button type="button" class="xtTab" data-tab="catalog">Catalogue</button>
+                </div>
+
+                <!-- ===== Connection ===== -->
+                <div class="xtPanel active" data-panel="connection">
+
+                    <div class="verticalSection">
+                        <h3 class="sectionTitle">Xtream server</h3>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="txtBaseUrl">Server URL</label>
+                            <input id="txtBaseUrl" type="text" is="emby-input" placeholder="http://host:port" />
+                            <div class="fieldDescription">Base URL of the Xtream account, without a trailing slash. With Dispatcharr, this is its Xtream output address.</div>
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="txtUsername">Username</label>
+                            <input id="txtUsername" type="text" is="emby-input" autocomplete="off" />
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="txtPassword">Password</label>
+                            <input id="txtPassword" type="password" is="emby-input" autocomplete="new-password" />
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="txtHttpUserAgent">HTTP User-Agent (optional)</label>
+                            <input id="txtHttpUserAgent" type="text" is="emby-input" />
+                            <div class="fieldDescription">Sent on every request to the Xtream server. Leave empty unless the provider requires a specific player string.</div>
+                        </div>
+                        <button id="btnTestConnection" is="emby-button" type="button" class="raised button-secondary"><span>Test connection</span></button>
+                        <div class="xtResult" id="connectionResult"></div>
+                    </div>
+
+                    <div class="verticalSection">
+                        <h3 class="sectionTitle">Dispatcharr</h3>
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="chkEnableDispatcharr" type="checkbox" is="emby-checkbox" />
+                                <span>Use Dispatcharr for Live TV</span>
+                            </label>
+                            <div class="fieldDescription checkboxFieldDescription">Reads channel profiles, stream stats and Gracenote station IDs from Dispatcharr.</div>
+                        </div>
+
+                        <div id="dispatcharrSettings">
+                            <div class="inputContainer">
+                                <label class="inputLabel inputLabelUnfocused" for="txtDispatcharrUrl">Dispatcharr URL</label>
+                                <input id="txtDispatcharrUrl" type="text" is="emby-input" placeholder="http://host:9191" />
+                            </div>
+                            <div class="inputContainer">
+                                <label class="inputLabel inputLabelUnfocused" for="txtDispatcharrUser">Dispatcharr username</label>
+                                <input id="txtDispatcharrUser" type="text" is="emby-input" autocomplete="off" />
+                            </div>
+                            <div class="inputContainer">
+                                <label class="inputLabel inputLabelUnfocused" for="txtDispatcharrPass">Dispatcharr password</label>
+                                <input id="txtDispatcharrPass" type="password" is="emby-input" autocomplete="new-password" />
+                            </div>
+                            <button id="btnTestDispatcharr" is="emby-button" type="button" class="raised button-secondary"><span>Test Dispatcharr</span></button>
+                            <div class="xtResult" id="dispatcharrResult"></div>
+
+                            <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top:1em;">
+                                <label class="emby-checkbox-label">
+                                    <input id="chkDispatcharrFallback" type="checkbox" is="emby-checkbox" />
+                                    <span>Play channels Dispatcharr does not know from the Xtream server</span>
+                                </label>
+                                <div class="fieldDescription checkboxFieldDescription">Turn off to make sure every stream goes through Dispatcharr.</div>
+                            </div>
+
+                            <div class="selectContainer">
+                                <label class="selectLabel" for="selDispatcharrStreamEndpoint">Stream URL</label>
+                                <select id="selDispatcharrStreamEndpoint" is="emby-select" class="emby-select-withcolor emby-select">
+                                    <option value="proxy">Dispatcharr proxy (default)</option>
+                                    <option value="xtream">Xtream server (credentials above)</option>
+                                </select>
+                                <div class="fieldDescription">With the proxy, Dispatcharr lists Jellyfin as an anonymous client. The Xtream option plays through the account above, so Dispatcharr shows that user and applies its stream limits. It only takes effect when the Xtream server is the Dispatcharr server.</div>
+                                <div class="fieldDescription xtWarn" id="streamEndpointWarning" style="display:none;">The Xtream server URL and the Dispatcharr URL are not the same address, so the proxy will still be used.</div>
+                            </div>
+
+                            <div class="selectContainer">
+                                <label class="selectLabel" for="selDispatcharrCodecSource">Video codec for Dispatcharr channels</label>
+                                <select id="selDispatcharrCodecSource" is="emby-select" class="emby-select-withcolor emby-select">
+                                    <option value="auto">Automatic (recommended)</option>
+                                    <option value="stats">Codec reported by Dispatcharr stats</option>
+                                    <option value="h264">Always H.264</option>
+                                    <option value="hevc">Always HEVC</option>
+                                </select>
+                                <div class="fieldDescription">Change this only if a Dispatcharr channel plays with the wrong codec.</div>
+                            </div>
+
+                            <h3 class="sectionTitle xtSubTitle">Channel profiles</h3>
+                            <div class="fieldDescription" style="margin-bottom:0.6em;">Only channels enabled in at least one ticked profile appear in Jellyfin. Tick none to show all channels.</div>
+                            <div class="xtToolbar">
+                                <button id="btnRefreshProfiles" is="emby-button" type="button" class="raised button-secondary"><span>Refresh profiles</span></button>
+                                <button id="btnProfilesAll" is="emby-button" type="button" class="raised button-secondary" disabled><span>Select all</span></button>
+                                <button id="btnProfilesNone" is="emby-button" type="button" class="raised button-secondary" disabled><span>Select none</span></button>
+                            </div>
+                            <div class="xtCount" id="profilesCount"></div>
+                            <div class="xtList" id="profilesList"><div class="xtMuted">Click "Refresh profiles" to load.</div></div>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- ===== Live TV ===== -->
+                <div class="xtPanel" data-panel="livetv">
+
+                    <div class="verticalSection">
+                        <h3 class="sectionTitle">Live TV</h3>
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="chkEnableLiveTv" type="checkbox" is="emby-checkbox" />
+                                <span>Enable Live TV</span>
+                            </label>
+                            <div class="fieldDescription checkboxFieldDescription">Serves the Xtream channels to the Jellyfin tuner.</div>
+                        </div>
+                    </div>
+
+                    <div id="liveTvSettings">
+
+                        <div class="verticalSection">
+                            <h3 class="sectionTitle">Jellyfin tuner and guide</h3>
+                            <div class="fieldDescription" style="margin-bottom:0.6em;">The plugin registers its own tuner ("Xtream IPTV") and guide provider in Jellyfin's Live TV settings. Save the connection first, then register once; the guide is refreshed by Jellyfin's "Refresh Guide" task.</div>
+                            <div class="xtToolbar">
+                                <button id="btnRegisterLiveTv" is="emby-button" type="button" class="raised button-submit"><span>Register tuner and guide in Jellyfin</span></button>
+                                <button id="btnRefreshLiveTvStatus" is="emby-button" type="button" class="raised button-secondary"><span>Refresh status</span></button>
+                            </div>
+                            <div class="xtResult" id="registerResult"></div>
+                            <div class="xtStatusBox">
+                                <div><strong>Tuner:</strong> <span id="liveTvTunerState" class="xtMuted">Not loaded</span></div>
+                                <div><strong>Guide provider:</strong> <span id="liveTvGuideState" class="xtMuted">Not loaded</span></div>
+                                <div id="liveTvStatusMessageRow" style="display:none;"><span id="liveTvStatusMessage" class="xtMuted"></span></div>
+                            </div>
+                        </div>
+
+                        <div class="verticalSection">
+                            <h3 class="sectionTitle">Channels</h3>
+                            <div class="fieldDescription" style="margin-bottom:0.6em;">Tick the Live TV categories to include. Tick none to include every channel.</div>
+                            <div class="xtPicker" data-kind="live">
+                                <div class="xtToolbar">
+                                    <button is="emby-button" type="button" class="raised button-secondary btnPickerRefresh"><span>Refresh categories</span></button>
+                                    <button is="emby-button" type="button" class="raised button-secondary btnPickerAll" disabled><span>Select all</span></button>
+                                    <button is="emby-button" type="button" class="raised button-secondary btnPickerNone" disabled><span>Select none</span></button>
+                                </div>
+                                <input type="text" class="xtFilter pickerFilter" placeholder="Filter categories" />
+                                <div class="xtCount pickerCount"></div>
+                                <div class="xtList pickerList"><div class="xtMuted">Click "Refresh categories" to load.</div></div>
+                            </div>
+                            <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top:0.8em;">
+                                <label class="emby-checkbox-label">
+                                    <input id="chkIncludeAdultChannels" type="checkbox" is="emby-checkbox" />
+                                    <span>Include adult channels</span>
+                                </label>
+                            </div>
+                            <div class="checkboxContainer checkboxContainer-withDescription">
+                                <label class="emby-checkbox-label">
+                                    <input id="chkEnableChannelNameCleaning" type="checkbox" is="emby-checkbox" />
+                                    <span>Clean channel names</span>
+                                </label>
+                                <div class="fieldDescription checkboxFieldDescription">Removes quality tags and the terms below from channel names.</div>
+                            </div>
+                            <div class="inputContainer" id="channelCleaningSettings">
+                                <label class="inputLabel inputLabelUnfocused" for="txtChannelRemoveTerms">Terms to remove (comma-separated)</label>
+                                <input id="txtChannelRemoveTerms" type="text" is="emby-input" placeholder="IT:, |IT|, VIP" />
+                            </div>
+                        </div>
+
+                        <div class="verticalSection">
+                            <h3 class="sectionTitle">Guide</h3>
+                            <div class="selectContainer">
+                                <label class="selectLabel" for="selEpgSource">Guide source</label>
+                                <select id="selEpgSource" is="emby-select" class="emby-select-withcolor emby-select">
+                                    <option value="0">Xtream server</option>
+                                    <option value="1">Custom XMLTV URL</option>
+                                    <option value="2">Disabled</option>
+                                </select>
+                                <div class="fieldDescription">Custom URL: any XMLTV feed, for example Dispatcharr's /output/epg. Disabled: no guide from this plugin, use it when another guide source is already set in Jellyfin's Live TV settings.</div>
+                            </div>
+                            <div class="inputContainer" id="epgCustomUrlSettings">
+                                <label class="inputLabel inputLabelUnfocused" for="txtCustomEpgUrl">Custom guide URL</label>
+                                <input id="txtCustomEpgUrl" type="url" is="emby-input" />
+                            </div>
+                            <div class="checkboxContainer checkboxContainer-withDescription" id="epgSettings">
+                                <label class="emby-checkbox-label">
+                                    <input id="chkDeferEpgToGuideData" type="checkbox" is="emby-checkbox" />
+                                    <span>Leave channels with a Gracenote ID to the server's own guide data</span>
+                                </label>
+                                <div class="fieldDescription checkboxFieldDescription">Turn off when no other guide provider is configured in Jellyfin.</div>
+                            </div>
+                            <div class="inputContainer">
+                                <label class="inputLabel inputLabelUnfocused" for="txtEpgDaysToFetch">Guide days to fetch</label>
+                                <input id="txtEpgDaysToFetch" type="number" is="emby-input" min="1" max="14" step="1" />
+                            </div>
+                            <div class="inputContainer">
+                                <label class="inputLabel inputLabelUnfocused" for="txtEpgCacheMinutes">Guide cache (minutes)</label>
+                                <input id="txtEpgCacheMinutes" type="number" is="emby-input" min="5" max="1440" step="5" />
+                            </div>
+                            <div class="inputContainer">
+                                <label class="inputLabel inputLabelUnfocused" for="txtM3UCacheMinutes">Channel list cache (minutes)</label>
+                                <input id="txtM3UCacheMinutes" type="number" is="emby-input" min="1" max="1440" step="1" />
+                            </div>
+                        </div>
+
+                        <div class="verticalSection">
+                            <h3 class="sectionTitle">Playback</h3>
+                            <div class="selectContainer">
+                                <label class="selectLabel" for="selOutputFormat">Stream format</label>
+                                <select id="selOutputFormat" is="emby-select" class="emby-select-withcolor emby-select">
+                                    <option value="ts">MPEG-TS (.ts)</option>
+                                    <option value="m3u8">HLS (.m3u8)</option>
+                                </select>
+                                <div class="fieldDescription">MPEG-TS gives the lowest latency.</div>
+                            </div>
+                            <div class="checkboxContainer checkboxContainer-withDescription">
+                                <label class="emby-checkbox-label">
+                                    <input id="chkDeclareDvbSubtitles" type="checkbox" is="emby-checkbox" />
+                                    <span>Declare DVB subtitles</span>
+                                </label>
+                                <div class="fieldDescription checkboxFieldDescription">Shows DVB subtitles in Jellyfin. Channels without them get an empty subtitle track.</div>
+                            </div>
+                            <div class="checkboxContainer checkboxContainer-withDescription">
+                                <label class="emby-checkbox-label">
+                                    <input id="chkForceAudioTranscode" type="checkbox" is="emby-checkbox" />
+                                    <span>Force audio transcoding</span>
+                                </label>
+                                <div class="fieldDescription checkboxFieldDescription">Converts AC3 and EAC3 to AAC. Fixes silent audio on iPhone and iPad, but disables Dolby passthrough elsewhere.</div>
+                            </div>
+                            <div class="inputContainer">
+                                <label class="inputLabel inputLabelUnfocused" for="txtFallbackTranscodeBitrate">Transcode bitrate cap (Mbps)</label>
+                                <input id="txtFallbackTranscodeBitrate" type="number" is="emby-input" min="0" max="200" step="1" />
+                                <div class="fieldDescription">0 = no cap. Set it below the hardware encoder limit (for example 8) when transcoding falls back to software with "Bitrate exceeds maximum supported rate".</div>
+                            </div>
+                        </div>
+
+                        <div class="verticalSection">
+                            <h3 class="sectionTitle">Maintenance</h3>
+                            <div class="xtToolbar">
+                                <button id="btnRefreshCache" is="emby-button" type="button" class="raised button-secondary"><span>Refresh channel and guide cache</span></button>
+                                <button id="btnSyncGuideMappings" is="emby-button" type="button" class="raised button-secondary"><span>Sync guide mappings</span></button>
+                            </div>
+                            <div class="fieldDescription">Guide mappings are synced automatically after every channel refresh. Run it by hand only if Gracenote guide data stopped showing for Dispatcharr channels.</div>
+                            <div class="xtResult" id="maintenanceResult"></div>
+                        </div>
+
+                    </div>
+                </div>
+
+                <!-- ===== Catalogue ===== -->
+                <div class="xtPanel" data-panel="catalog">
+
+                    <div class="verticalSection">
+                        <h3 class="sectionTitle">Catalogue</h3>
+                        <div class="fieldDescription" style="margin-bottom:0.8em;">Movies and series from the Xtream lists are added straight to the Jellyfin libraries below, without files. Series episodes and movie detail are loaded when a title is opened. A daily scheduled task keeps the lists up to date; Sync now runs it immediately.</div>
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="chkSyncMovies" type="checkbox" is="emby-checkbox" />
+                                <span>Sync movies</span>
+                            </label>
+                        </div>
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="chkSyncSeries" type="checkbox" is="emby-checkbox" />
+                                <span>Sync series</span>
+                            </label>
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="txtLibraryPath">Library folder</label>
+                            <input id="txtLibraryPath" type="text" is="emby-input" placeholder="/config/xtream" />
+                            <div class="fieldDescription">Two empty folders, Movies/ and Shows/, are created inside it: they are the locations of the two Jellyfin libraries and stay empty.</div>
+                        </div>
+                        <div class="xtToolbar">
+                            <button id="btnValidatePath" is="emby-button" type="button" class="raised button-secondary"><span>Validate</span></button>
+                            <button id="btnCreateLibraries" is="emby-button" type="button" class="raised button-submit"><span>Create libraries in Jellyfin</span></button>
+                        </div>
+                        <div class="xtResult" id="pathResult"></div>
+                        <div class="xtNote">
+                            <strong>Jellyfin libraries</strong> created by the button above (save the library folder first):
+                            <ul>
+                                <li>Movies library named "Film": folder <code id="libMoviesPath">/config/xtream/Movies</code></li>
+                                <li>TV shows library named "Serie": folder <code id="libShowsPath">/config/xtream/Shows</code></li>
+                            </ul>
+                            Both are created with no metadata fetchers, no image fetchers, no real-time monitoring and no trickplay or chapter extraction. Libraries that already exist are left alone.
+                        </div>
+                    </div>
+
+                    <div class="verticalSection" id="movieSettings">
+                        <h3 class="sectionTitle">Movie categories</h3>
+                        <div class="fieldDescription" style="margin-bottom:0.6em;">Tick the categories to sync. Tick none to sync every movie category.</div>
+                        <div class="xtPicker" data-kind="vod">
+                            <div class="xtToolbar">
+                                <button is="emby-button" type="button" class="raised button-secondary btnPickerRefresh"><span>Refresh categories</span></button>
+                                <button is="emby-button" type="button" class="raised button-secondary btnPickerAll" disabled><span>Select all</span></button>
+                                <button is="emby-button" type="button" class="raised button-secondary btnPickerNone" disabled><span>Select none</span></button>
+                            </div>
+                            <input type="text" class="xtFilter pickerFilter" placeholder="Filter categories" />
+                            <div class="xtCount pickerCount"></div>
+                            <div class="xtList pickerList"><div class="xtMuted">Click "Refresh categories" to load.</div></div>
+                        </div>
+                    </div>
+
+                    <div class="verticalSection" id="seriesSettings">
+                        <h3 class="sectionTitle">Series categories</h3>
+                        <div class="fieldDescription" style="margin-bottom:0.6em;">Tick the categories to sync. Tick none to sync every series category.</div>
+                        <div class="xtPicker" data-kind="series">
+                            <div class="xtToolbar">
+                                <button is="emby-button" type="button" class="raised button-secondary btnPickerRefresh"><span>Refresh categories</span></button>
+                                <button is="emby-button" type="button" class="raised button-secondary btnPickerAll" disabled><span>Select all</span></button>
+                                <button is="emby-button" type="button" class="raised button-secondary btnPickerNone" disabled><span>Select none</span></button>
+                            </div>
+                            <input type="text" class="xtFilter pickerFilter" placeholder="Filter categories" />
+                            <div class="xtCount pickerCount"></div>
+                            <div class="xtList pickerList"><div class="xtMuted">Click "Refresh categories" to load.</div></div>
+                        </div>
+                    </div>
+
+                    <div class="verticalSection">
+                        <h3 class="sectionTitle">Options</h3>
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="chkIncludeAdultContent" type="checkbox" is="emby-checkbox" />
+                                <span>Include adult content</span>
+                            </label>
+                            <div class="fieldDescription checkboxFieldDescription">Keeps titles flagged as adult and categories with adult words in their name.</div>
+                        </div>
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="chkAutoIncludeNewCategories" type="checkbox" is="emby-checkbox" />
+                                <span>Include new categories automatically</span>
+                            </label>
+                            <div class="fieldDescription checkboxFieldDescription">When you have picked categories above, a movie or series category the provider adds later (a new saga, a new channel of films) joins your selection at the next sync instead of staying out. Categories matching the excluded terms never join.</div>
+                        </div>
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="chkMergeMovieVersions" type="checkbox" is="emby-checkbox" />
+                                <span>Merge movie versions</span>
+                            </label>
+                            <div class="fieldDescription checkboxFieldDescription">Releases of the same title that differ only by quality tag become one movie with a version picker.</div>
+                        </div>
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="chkDetailOnOpen" type="checkbox" is="emby-checkbox" />
+                                <span>Fetch movie detail on open</span>
+                            </label>
+                            <div class="fieldDescription checkboxFieldDescription">Plot, cast and backdrop of a movie, and the cast and episodes of a series, are fetched from the provider the first time the title is opened. The sync writes titles only.</div>
+                        </div>
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="chkActorPhotosOnOpen" type="checkbox" is="emby-checkbox" />
+                                <span>Actor photos on open</span>
+                            </label>
+                            <div class="fieldDescription checkboxFieldDescription">Xtream has no actor photos. When a title is opened, the actors of its cast that have none yet are refreshed in the background by Jellyfin's own person providers (TheMovieDb), at most 15 per title, three at a time. Each actor is fetched once and shared by every title.</div>
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="txtDetailWaitSeconds">Wait for the provider on open (seconds)</label>
+                            <input id="txtDetailWaitSeconds" type="number" is="emby-input" min="0" max="30" step="1" />
+                            <div class="fieldDescription">The detail page waits this long for the provider so it opens complete. Past it the page opens with what is there and the detail lands in the background.</div>
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="txtExcludedCategoryTerms">Categories to leave out (comma-separated terms)</label>
+                            <input id="txtExcludedCategoryTerms" type="text" is="emby-input" placeholder="Karaoke, Concerti" />
+                            <div class="fieldDescription">Movie and series categories whose name contains one of these terms are skipped, whatever the selection above; their titles are removed at the next sync.</div>
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="txtContentRemoveTerms">Terms to remove from titles (comma-separated)</label>
+                            <input id="txtContentRemoveTerms" type="text" is="emby-input" placeholder="IT -, [MULTI], DUAL" />
+                            <div class="fieldDescription">Removed in addition to the built-in quality tags (FHD, 4K, HEVC, 1080p and so on).</div>
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="txtSyncParallelism">Concurrent series detail requests</label>
+                            <input id="txtSyncParallelism" type="number" is="emby-input" min="1" max="16" step="1" />
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="txtXtreamRequestsPerSecond">Xtream requests per second (0 = unlimited)</label>
+                            <input id="txtXtreamRequestsPerSecond" type="number" is="emby-input" min="0" max="100" step="1" />
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="txtRemovalSafetyThreshold">Removal safety threshold (%)</label>
+                            <input id="txtRemovalSafetyThreshold" type="number" is="emby-input" min="0" max="100" step="1" />
+                            <div class="fieldDescription">A sync never removes more than this share of the existing titles in one run, so a provider glitch cannot empty the library.</div>
+                        </div>
+                    </div>
+
+                    <div class="verticalSection">
+                        <h3 class="sectionTitle">Sync</h3>
+                        <div class="xtToolbar">
+                            <button id="btnSyncNow" is="emby-button" type="button" class="raised button-submit"><span>Sync now</span></button>
+                            <button id="btnRefreshStatus" is="emby-button" type="button" class="raised button-secondary"><span>Refresh status</span></button>
+                        </div>
+                        <div class="xtResult" id="syncResult"></div>
+                        <div class="xtStatusBox">
+                            <div><strong>Status:</strong> <span id="statusState" class="xtMuted">Not loaded</span></div>
+                            <div id="statusProgressRow" style="display:none;"><strong>Progress:</strong> <span id="statusProgress"></span></div>
+                            <div><strong>Last run:</strong> <span id="statusLastRun" class="xtMuted">Never</span></div>
+                            <div><strong>Last summary:</strong> <span id="statusSummary" class="xtMuted">None</span></div>
+                            <div><strong>Movies, series and episodes currently in the Jellyfin libraries:</strong> <span id="statusCounts" class="xtMuted">Unknown</span></div>
+                            <div id="statusLibrariesRow" style="display:none;"><strong>Libraries missing:</strong> <span id="statusLibraries" class="xtWarn"></span></div>
+                            <div id="statusMessageRow" style="display:none;"><span id="statusMessage" class="xtWarn"></span></div>
+                        </div>
+                    </div>
+
+                </div>
+
+                <div class="xtSave">
+                    <button is="emby-button" type="submit" class="raised button-submit block"><span>Save</span></button>
+                </div>
+
+            </form>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+    (function () {
+        'use strict';
+
+        var pluginId = 'c02587d5-61e0-415a-a2d5-3ccd3107d112';
+        var STATUS_POLL_MS = 2000;
+
+        // One entry per category picker: API route, config cache property, config selection property.
+        var pickerKinds = {
+            live:   { route: 'XtreamIptv/Categories/Live',   cache: 'CachedLiveCategories',   selected: 'SelectedLiveCategoryIds' },
+            vod:    { route: 'XtreamIptv/Categories/Vod',    cache: 'CachedVodCategories',    selected: 'SelectedVodCategoryIds' },
+            series: { route: 'XtreamIptv/Categories/Series', cache: 'CachedSeriesCategories', selected: 'SelectedSeriesCategoryIds' }
+        };
+
+        // Page state; the page element is created once per visit, so this lives with it.
+        var state = {
+            view: null,
+            categories: { live: [], vod: [], series: [] },
+            selectedIds: { live: [], vod: [], series: [] },
+            profiles: [],
+            selectedProfileIds: [],
+            pollTimer: null,
+            testRequestId: 0
+        };
+
+        // ---- Small helpers ----
+
+        function q(selector) {
+            return state.view.querySelector(selector);
+        }
+
+        function qa(selector) {
+            return state.view.querySelectorAll(selector);
+        }
+
+        function byId(id) {
+            return q('#' + id);
+        }
+
+        function escapeHtml(text) {
+            var div = document.createElement('div');
+            div.appendChild(document.createTextNode(text == null ? '' : String(text)));
+            return div.innerHTML;
+        }
+
+        function setResult(el, kind, message) {
+            var icon = kind === 'ok' ? '✓' : (kind === 'err' ? '✗' : '…');
+            el.innerHTML = '<span class="xtPill ' + kind + '">' + icon + ' ' + escapeHtml(message) + '</span>';
+        }
+
+        function show(el, visible) {
+            el.style.display = visible ? '' : 'none';
+        }
+
+        function setText(el, text, muted) {
+            el.textContent = text;
+            el.classList.toggle('xtMuted', !!muted);
+        }
+
+        function intValue(el, fallback) {
+            var n = parseInt(el.value, 10);
+            return isNaN(n) ? fallback : n;
+        }
+
+        function trimSlashes(value) {
+            return (value || '').trim().replace(/\/+$/, '');
+        }
+
+        function getJson(route) {
+            return ApiClient.getJSON(ApiClient.getUrl(route));
+        }
+
+        function postJson(route, body) {
+            return ApiClient.ajax({
+                type: 'POST',
+                url: ApiClient.getUrl(route),
+                contentType: 'application/json',
+                data: JSON.stringify(body || {}),
+                dataType: 'json'
+            });
+        }
+
+        function parseCachedJson(text) {
+            if (!text) return [];
+            try {
+                var parsed = JSON.parse(text);
+                return Array.isArray(parsed) ? parsed : [];
+            } catch (e) {
+                return [];
+            }
+        }
+
+        // The server reports the time as an ISO string, Unix seconds, Unix milliseconds
+        // or .NET ticks depending on the field; accept all of them.
+        function formatTime(value) {
+            if (!value) return '';
+            var date;
+            if (typeof value === 'string' && isNaN(Number(value))) {
+                date = new Date(value);
+            } else {
+                var n = Number(value);
+                if (n > 1e17) {
+                    date = new Date((n - 621355968000000000) / 10000);
+                } else if (n > 1e11) {
+                    date = new Date(n);
+                } else {
+                    date = new Date(n * 1000);
+                }
+            }
+            return isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+        }
+
+        function on(el, event, handler) {
+            el.addEventListener(event, handler);
+        }
+
+        // ---- Tabs ----
+
+        function bindTabs() {
+            var tabs = qa('.xtTab');
+            for (var i = 0; i < tabs.length; i++) {
+                on(tabs[i], 'click', function () {
+                    switchTab(this.getAttribute('data-tab'));
+                });
+            }
+        }
+
+        function switchTab(name) {
+            var tabs = qa('.xtTab');
+            var panels = qa('.xtPanel');
+            var i;
+            for (i = 0; i < tabs.length; i++) {
+                tabs[i].classList.toggle('active', tabs[i].getAttribute('data-tab') === name);
+            }
+            for (i = 0; i < panels.length; i++) {
+                panels[i].classList.toggle('active', panels[i].getAttribute('data-panel') === name);
+            }
+        }
+
+        // ---- Connection tab ----
+
+        function bindConnection() {
+            on(byId('btnTestConnection'), 'click', testConnection);
+            on(byId('btnTestDispatcharr'), 'click', testDispatcharr);
+            on(byId('chkEnableDispatcharr'), 'change', updateDispatcharrVisibility);
+            on(byId('btnRefreshProfiles'), 'click', loadProfiles);
+            on(byId('btnProfilesAll'), 'click', function () { setAllProfiles(true); });
+            on(byId('btnProfilesNone'), 'click', function () { setAllProfiles(false); });
+            on(byId('profilesList'), 'change', function (e) {
+                var box = e.target;
+                if (!box || !box.classList.contains('profileCheckbox')) return;
+                toggleId(state.selectedProfileIds, parseInt(box.getAttribute('data-id'), 10), box.checked);
+                updateProfilesCount();
+            });
+
+            var warningInputs = ['selDispatcharrStreamEndpoint', 'txtBaseUrl', 'txtDispatcharrUrl'];
+            for (var i = 0; i < warningInputs.length; i++) {
+                var el = byId(warningInputs[i]);
+                on(el, 'input', updateStreamEndpointWarning);
+                on(el, 'change', updateStreamEndpointWarning);
+            }
+        }
+
+        function updateDispatcharrVisibility() {
+            show(byId('dispatcharrSettings'), byId('chkEnableDispatcharr').checked);
+        }
+
+        // The Xtream stream URL is only used when the Xtream server is the Dispatcharr server;
+        // otherwise the plugin keeps the proxy URL, so say so here instead of only in the log.
+        function updateStreamEndpointWarning() {
+            var wantsXtream = byId('selDispatcharrStreamEndpoint').value === 'xtream';
+            var same = false;
+            try {
+                var a = new URL(byId('txtBaseUrl').value.trim());
+                var b = new URL(byId('txtDispatcharrUrl').value.trim());
+                same = a.origin === b.origin && trimSlashes(a.pathname) === trimSlashes(b.pathname);
+            } catch (e) {
+                same = false;
+            }
+            show(byId('streamEndpointWarning'), wantsXtream && !same);
+        }
+
+        function testConnection() {
+            var resultEl = byId('connectionResult');
+            var body = {
+                BaseUrl: trimSlashes(byId('txtBaseUrl').value),
+                Username: byId('txtUsername').value,
+                Password: byId('txtPassword').value,
+                HttpUserAgent: byId('txtHttpUserAgent').value.trim()
+            };
+            if (!body.BaseUrl || !body.Username || !body.Password) {
+                setResult(resultEl, 'err', 'Enter server URL, username and password first.');
+                return;
+            }
+            // Only the latest test may report, so a slow earlier reply cannot overwrite it.
+            var requestId = ++state.testRequestId;
+            setResult(resultEl, 'info', 'Testing connection');
+            postJson('XtreamIptv/TestConnection', body).then(function (result) {
+                if (requestId !== state.testRequestId) return;
+                setResult(resultEl, result.Success ? 'ok' : 'err', result.Message || (result.Success ? 'Connected.' : 'Connection failed.'));
+            }).catch(function () {
+                if (requestId !== state.testRequestId) return;
+                setResult(resultEl, 'err', 'Test request failed. Check the server log.');
+            });
+        }
+
+        function testDispatcharr() {
+            var resultEl = byId('dispatcharrResult');
+            var body = {
+                DispatcharrUrl: trimSlashes(byId('txtDispatcharrUrl').value),
+                DispatcharrUser: byId('txtDispatcharrUser').value,
+                DispatcharrPass: byId('txtDispatcharrPass').value
+            };
+            if (!body.DispatcharrUrl) {
+                setResult(resultEl, 'err', 'Enter the Dispatcharr URL first.');
+                return;
+            }
+            setResult(resultEl, 'info', 'Testing Dispatcharr');
+            postJson('XtreamIptv/TestDispatcharr', body).then(function (result) {
+                setResult(resultEl, result.Success ? 'ok' : 'err', result.Message || (result.Success ? 'Connected.' : 'Connection failed.'));
+            }).catch(function () {
+                setResult(resultEl, 'err', 'Test request failed. Check the server log.');
+            });
+        }
+
+        // ---- Dispatcharr profiles ----
+
+        function loadProfiles() {
+            var listEl = byId('profilesList');
+            listEl.innerHTML = '<div class="xtMuted">Loading profiles</div>';
+            getJson('XtreamIptv/DispatcharrProfiles').then(function (profiles) {
+                state.profiles = Array.isArray(profiles) ? profiles : [];
+                renderProfiles();
+                if (state.profiles.length === 0) {
+                    listEl.innerHTML = '<div class="xtMuted">No profiles found. Check the Dispatcharr settings.</div>';
+                }
+            }).catch(function () {
+                listEl.innerHTML = '<div class="xtMuted">Failed to load profiles. Save the Dispatcharr settings first, then try again.</div>';
+            });
+        }
+
+        function renderProfiles() {
+            var listEl = byId('profilesList');
+            var html = '';
+            for (var i = 0; i < state.profiles.length; i++) {
+                var p = state.profiles[i];
+                var checked = state.selectedProfileIds.indexOf(p.Id) >= 0 ? ' checked' : '';
+                html += '<label class="xtRow">';
+                html += '<input type="checkbox" class="profileCheckbox" data-id="' + p.Id + '"' + checked + ' />';
+                html += '<span>' + escapeHtml(p.Name || ('Profile ' + p.Id)) + '</span>';
+                html += '</label>';
+            }
+            listEl.innerHTML = html;
+            var hasProfiles = state.profiles.length > 0;
+            byId('btnProfilesAll').disabled = !hasProfiles;
+            byId('btnProfilesNone').disabled = !hasProfiles;
+            updateProfilesCount();
+        }
+
+        function setAllProfiles(checked) {
+            state.selectedProfileIds = checked
+                ? state.profiles.map(function (p) { return p.Id; })
+                : [];
+            renderProfiles();
+        }
+
+        function updateProfilesCount() {
+            var el = byId('profilesCount');
+            var total = state.profiles.length;
+            if (total === 0) {
+                el.textContent = '';
+                return;
+            }
+            var selected = state.selectedProfileIds.length;
+            el.textContent = selected === 0
+                ? 'No profile ticked: all channels shown'
+                : selected + ' / ' + total + ' profiles selected';
+        }
+
+        // ---- Live TV tab ----
+
+        function bindLiveTv() {
+            on(byId('chkEnableLiveTv'), 'change', updateLiveTvVisibility);
+            on(byId('selEpgSource'), 'change', updateEpgVisibility);
+            on(byId('chkEnableChannelNameCleaning'), 'change', updateChannelCleaningVisibility);
+            on(byId('btnRefreshCache'), 'click', refreshCache);
+            on(byId('btnSyncGuideMappings'), 'click', syncGuideMappings);
+            on(byId('btnRegisterLiveTv'), 'click', registerLiveTv);
+            on(byId('btnRefreshLiveTvStatus'), 'click', refreshLiveTvStatus);
+        }
+
+        function updateLiveTvVisibility() {
+            show(byId('liveTvSettings'), byId('chkEnableLiveTv').checked);
+        }
+
+        function updateEpgVisibility() {
+            var source = intValue(byId('selEpgSource'), 0);
+            show(byId('epgCustomUrlSettings'), source === 1);
+            show(byId('epgSettings'), source !== 2);
+        }
+
+        function updateChannelCleaningVisibility() {
+            show(byId('channelCleaningSettings'), byId('chkEnableChannelNameCleaning').checked);
+        }
+
+        function refreshCache() {
+            var resultEl = byId('maintenanceResult');
+            setResult(resultEl, 'info', 'Refreshing cache');
+            ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('XtreamIptv/RefreshCache') }).then(function () {
+                setResult(resultEl, 'ok', 'Channel and guide cache refreshed.');
+            }).catch(function () {
+                setResult(resultEl, 'err', 'Failed to refresh the cache.');
+            });
+        }
+
+        function syncGuideMappings() {
+            var btn = byId('btnSyncGuideMappings');
+            var resultEl = byId('maintenanceResult');
+            btn.disabled = true;
+            setResult(resultEl, 'info', 'Syncing guide mappings');
+            ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('XtreamIptv/SyncGuideMappings'), dataType: 'json' }).then(function (result) {
+                btn.disabled = false;
+                setResult(resultEl, result.Success ? 'ok' : 'err', result.Message || 'Done.');
+            }).catch(function () {
+                btn.disabled = false;
+                setResult(resultEl, 'err', 'Sync request failed. Check the server log.');
+            });
+        }
+
+        function registerLiveTv() {
+            var btn = byId('btnRegisterLiveTv');
+            var resultEl = byId('registerResult');
+            btn.disabled = true;
+            setResult(resultEl, 'info', 'Registering the tuner and the guide provider');
+            postJson('XtreamIptv/LiveTv/Register', {}).then(function (result) {
+                btn.disabled = false;
+                setResult(resultEl, result.Success ? 'ok' : 'err', result.Message || (result.Success ? 'Registered.' : 'Registration failed.'));
+                refreshLiveTvStatus();
+            }).catch(function () {
+                btn.disabled = false;
+                setResult(resultEl, 'err', 'Registration request failed. Check the server log.');
+            });
+        }
+
+        function refreshLiveTvStatus() {
+            getJson('XtreamIptv/LiveTv/Status').then(function (status) {
+                renderLiveTvStatus(status || {});
+            }).catch(function () {
+                setText(byId('liveTvTunerState'), 'Status unavailable', true);
+                setText(byId('liveTvGuideState'), 'Status unavailable', true);
+            });
+        }
+
+        function renderLiveTvStatus(status) {
+            setText(byId('liveTvTunerState'), status.TunerRegistered ? 'Registered' : 'Not registered', !status.TunerRegistered);
+            setText(byId('liveTvGuideState'), status.GuideRegistered ? 'Registered' : 'Not registered', !status.GuideRegistered);
+            var message = status.Message || '';
+            show(byId('liveTvStatusMessageRow'), !!message);
+            byId('liveTvStatusMessage').textContent = message;
+        }
+
+        // ---- Category pickers (shared by Live, VOD and Series) ----
+
+        function pickerRoot(kind) {
+            return q('.xtPicker[data-kind="' + kind + '"]');
+        }
+
+        function bindPickers() {
+            var roots = qa('.xtPicker');
+            for (var i = 0; i < roots.length; i++) {
+                bindPicker(roots[i], roots[i].getAttribute('data-kind'));
+            }
+        }
+
+        function bindPicker(root, kind) {
+            on(root.querySelector('.btnPickerRefresh'), 'click', function () { loadCategories(kind); });
+            on(root.querySelector('.btnPickerAll'), 'click', function () { setVisibleCategories(kind, true); });
+            on(root.querySelector('.btnPickerNone'), 'click', function () { setVisibleCategories(kind, false); });
+            on(root.querySelector('.pickerFilter'), 'input', function () { applyPickerFilter(kind); });
+            on(root.querySelector('.pickerList'), 'change', function (e) {
+                var box = e.target;
+                if (!box || !box.classList.contains('categoryCheckbox')) return;
+                toggleId(state.selectedIds[kind], parseInt(box.getAttribute('data-id'), 10), box.checked);
+                updatePickerCount(kind);
+            });
+        }
+
+        function toggleId(list, id, present) {
+            var index = list.indexOf(id);
+            if (present && index < 0) list.push(id);
+            if (!present && index >= 0) list.splice(index, 1);
+        }
+
+        function loadCategories(kind) {
+            var root = pickerRoot(kind);
+            var listEl = root.querySelector('.pickerList');
+            listEl.innerHTML = '<div class="xtMuted">Loading categories</div>';
+            getJson(pickerKinds[kind].route).then(function (categories) {
+                state.categories[kind] = Array.isArray(categories) ? categories : [];
+                renderCategories(kind);
+                if (state.categories[kind].length === 0) {
+                    listEl.innerHTML = '<div class="xtMuted">No categories found. Check the Xtream connection settings.</div>';
+                }
+            }).catch(function () {
+                listEl.innerHTML = '<div class="xtMuted">Failed to load categories. Save the connection settings first, then try again.</div>';
+            });
+        }
+
+        function renderCategories(kind) {
+            var root = pickerRoot(kind);
+            var listEl = root.querySelector('.pickerList');
+            var categories = state.categories[kind];
+            var selected = state.selectedIds[kind];
+            var html = '';
+            for (var i = 0; i < categories.length; i++) {
+                var cat = categories[i];
+                var checked = selected.indexOf(cat.CategoryId) >= 0 ? ' checked' : '';
+                html += '<label class="xtRow" data-name="' + escapeHtml((cat.CategoryName || '').toLowerCase()) + '">';
+                html += '<input type="checkbox" class="categoryCheckbox" data-id="' + cat.CategoryId + '"' + checked + ' />';
+                html += '<span>' + escapeHtml(cat.CategoryName) + '</span>';
+                html += '</label>';
+            }
+            listEl.innerHTML = html;
+            var hasCategories = categories.length > 0;
+            root.querySelector('.btnPickerAll').disabled = !hasCategories;
+            root.querySelector('.btnPickerNone').disabled = !hasCategories;
+            applyPickerFilter(kind);
+        }
+
+        function applyPickerFilter(kind) {
+            var root = pickerRoot(kind);
+            var filter = root.querySelector('.pickerFilter').value.trim().toLowerCase();
+            var rows = root.querySelectorAll('.xtRow');
+            for (var i = 0; i < rows.length; i++) {
+                show(rows[i], !filter || rows[i].getAttribute('data-name').indexOf(filter) >= 0);
+            }
+            updatePickerCount(kind);
+        }
+
+        // Select all / none act on the rows matching the current filter.
+        function setVisibleCategories(kind, checked) {
+            var root = pickerRoot(kind);
+            var rows = root.querySelectorAll('.xtRow');
+            for (var i = 0; i < rows.length; i++) {
+                if (rows[i].style.display === 'none') continue;
+                var box = rows[i].querySelector('.categoryCheckbox');
+                box.checked = checked;
+                toggleId(state.selectedIds[kind], parseInt(box.getAttribute('data-id'), 10), checked);
+            }
+            updatePickerCount(kind);
+        }
+
+        function updatePickerCount(kind) {
+            var root = pickerRoot(kind);
+            var el = root.querySelector('.pickerCount');
+            var total = state.categories[kind].length;
+            if (total === 0) {
+                el.textContent = '';
+                return;
+            }
+            var selected = state.selectedIds[kind].length;
+            var text = selected === 0
+                ? 'All ' + total + ' categories included (none ticked)'
+                : selected + ' / ' + total + ' categories selected';
+            var filter = root.querySelector('.pickerFilter').value.trim();
+            if (filter) {
+                var visible = 0;
+                var rows = root.querySelectorAll('.xtRow');
+                for (var i = 0; i < rows.length; i++) {
+                    if (rows[i].style.display !== 'none') visible++;
+                }
+                text += ', ' + visible + ' shown by the filter';
+            }
+            el.textContent = text;
+        }
+
+        // ---- Catalogue tab ----
+
+        function bindCatalog() {
+            on(byId('chkSyncMovies'), 'change', updateCatalogVisibility);
+            on(byId('chkSyncSeries'), 'change', updateCatalogVisibility);
+            on(byId('txtLibraryPath'), 'input', updateLibraryPaths);
+            on(byId('btnValidatePath'), 'click', validatePath);
+            on(byId('btnCreateLibraries'), 'click', createLibraries);
+            on(byId('btnSyncNow'), 'click', startSync);
+            on(byId('btnRefreshStatus'), 'click', refreshCatalogStatus);
+        }
+
+        function updateCatalogVisibility() {
+            show(byId('movieSettings'), byId('chkSyncMovies').checked);
+            show(byId('seriesSettings'), byId('chkSyncSeries').checked);
+        }
+
+        function updateLibraryPaths() {
+            var root = trimSlashes(byId('txtLibraryPath').value) || '/config/xtream';
+            byId('libMoviesPath').textContent = root + '/Movies';
+            byId('libShowsPath').textContent = root + '/Shows';
+        }
+
+        function validatePath() {
+            var resultEl = byId('pathResult');
+            var path = trimSlashes(byId('txtLibraryPath').value);
+            if (!path) {
+                setResult(resultEl, 'err', 'Enter a library folder first.');
+                return;
+            }
+            setResult(resultEl, 'info', 'Checking folder');
+            postJson('XtreamIptv/Catalog/ValidatePath', { Path: path }).then(function (result) {
+                setResult(resultEl, result.Success ? 'ok' : 'err', result.Message || (result.Success ? 'Folder is writable.' : 'Folder is not writable.'));
+            }).catch(function () {
+                setResult(resultEl, 'err', 'Validation request failed. Check the server log.');
+            });
+        }
+
+        // Uses the saved library folder: the server reads it from the stored configuration.
+        function createLibraries() {
+            var btn = byId('btnCreateLibraries');
+            var resultEl = byId('pathResult');
+            btn.disabled = true;
+            setResult(resultEl, 'info', 'Creating the libraries');
+            postJson('XtreamIptv/Catalog/CreateLibraries', {}).then(function (result) {
+                btn.disabled = false;
+                setResult(resultEl, result.Success ? 'ok' : 'err', result.Message || (result.Success ? 'Libraries ready.' : 'Could not create the libraries.'));
+                refreshCatalogStatus();
+            }).catch(function () {
+                btn.disabled = false;
+                setResult(resultEl, 'err', 'Request failed. Check the server log.');
+            });
+        }
+
+        function startSync() {
+            var resultEl = byId('syncResult');
+            var btn = byId('btnSyncNow');
+            btn.disabled = true;
+            setResult(resultEl, 'info', 'Starting sync');
+            postJson('XtreamIptv/Catalog/Sync', {}).then(function (result) {
+                btn.disabled = false;
+                if (result.Started) {
+                    setResult(resultEl, 'ok', result.Message || 'Sync started. Save any unsaved changes first, they are not used by a running sync.');
+                } else {
+                    setResult(resultEl, 'err', result.Message || 'A sync is already running.');
+                }
+                refreshCatalogStatus();
+            }).catch(function () {
+                btn.disabled = false;
+                setResult(resultEl, 'err', 'Sync request failed. Check the server log.');
+            });
+        }
+
+        function refreshCatalogStatus() {
+            getJson('XtreamIptv/Catalog/Status').then(function (status) {
+                renderCatalogStatus(status || {});
+                if (status && status.Running) {
+                    startStatusPolling();
+                } else {
+                    stopStatusPolling();
+                }
+            }).catch(function () {
+                stopStatusPolling();
+                setText(byId('statusState'), 'Status unavailable', true);
+            });
+        }
+
+        function startStatusPolling() {
+            if (state.pollTimer) return;
+            state.pollTimer = setInterval(refreshCatalogStatus, STATUS_POLL_MS);
+        }
+
+        function stopStatusPolling() {
+            if (!state.pollTimer) return;
+            clearInterval(state.pollTimer);
+            state.pollTimer = null;
+        }
+
+        function renderCatalogStatus(status) {
+            var running = !!status.Running;
+            var phase = status.Phase || '';
+            setText(byId('statusState'), running ? 'Running' + (phase ? ': ' + phase : '') : 'Idle', !running);
+
+            var progressRow = byId('statusProgressRow');
+            var total = Number(status.Total) || 0;
+            var processed = Number(status.Processed) || 0;
+            show(progressRow, running);
+            if (running) {
+                var pct = total > 0 ? Math.min(100, Math.round(processed * 100 / total)) : 0;
+                byId('statusProgress').textContent = total > 0
+                    ? processed + ' / ' + total + ' (' + pct + '%)'
+                    : processed + ' processed';
+            }
+
+            // Empty values keep what the config already showed (last run and summary).
+            var lastRun = formatTime(status.LastRunUtc);
+            if (lastRun) setText(byId('statusLastRun'), lastRun, false);
+
+            var summary = status.LastSummary || '';
+            if (summary) setText(byId('statusSummary'), summary, false);
+
+            var hasCounts = status.Movies != null || status.Series != null || status.Episodes != null;
+            setText(byId('statusCounts'), hasCounts
+                ? (Number(status.Movies) || 0) + ' movies, ' + (Number(status.Series) || 0) + ' series, ' + (Number(status.Episodes) || 0) + ' episodes'
+                : 'Unknown', !hasCounts);
+
+            var missing = Array.isArray(status.LibrariesMissing) ? status.LibrariesMissing : [];
+            show(byId('statusLibrariesRow'), missing.length > 0);
+            byId('statusLibraries').textContent = missing.join(', ');
+
+            var message = status.Message || '';
+            show(byId('statusMessageRow'), !!message);
+            byId('statusMessage').textContent = message;
+        }
+
+        // ---- Load and save ----
+
+        function loadConfig() {
+            Dashboard.showLoadingMsg();
+            ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                applyConfig(config);
+                Dashboard.hideLoadingMsg();
+            }).catch(function () {
+                Dashboard.hideLoadingMsg();
+                Dashboard.alert('Failed to load the plugin configuration.');
+            });
+        }
+
+        function applyConfig(config) {
+            // Connection
+            byId('txtBaseUrl').value = config.BaseUrl || '';
+            byId('txtUsername').value = config.Username || '';
+            byId('txtPassword').value = config.Password || '';
+            byId('txtHttpUserAgent').value = config.HttpUserAgent || '';
+
+            // Dispatcharr
+            byId('chkEnableDispatcharr').checked = !!config.EnableDispatcharr;
+            byId('txtDispatcharrUrl').value = config.DispatcharrUrl || '';
+            byId('txtDispatcharrUser').value = config.DispatcharrUser || '';
+            byId('txtDispatcharrPass').value = config.DispatcharrPass || '';
+            byId('chkDispatcharrFallback').checked = config.DispatcharrFallbackToXtream !== false;
+            byId('selDispatcharrStreamEndpoint').value = config.DispatcharrStreamEndpoint || 'proxy';
+            byId('selDispatcharrCodecSource').value = config.DispatcharrVideoCodecSource || 'auto';
+            state.selectedProfileIds = (config.SelectedDispatcharrProfileIds || []).slice();
+            state.profiles = parseCachedJson(config.CachedDispatcharrProfiles);
+            if (state.profiles.length > 0) renderProfiles();
+
+            // Live TV
+            byId('chkEnableLiveTv').checked = config.EnableLiveTv !== false;
+            byId('selOutputFormat').value = config.LiveTvOutputFormat || 'ts';
+            byId('txtFallbackTranscodeBitrate').value = config.FallbackTranscodeBitrateMbps || 0;
+            byId('chkIncludeAdultChannels').checked = !!config.IncludeAdultChannels;
+            byId('chkEnableChannelNameCleaning').checked = config.EnableChannelNameCleaning !== false;
+            byId('txtChannelRemoveTerms').value = config.ChannelRemoveTerms || '';
+            byId('selEpgSource').value = epgSourceToValue(config.EpgSource);
+            byId('txtCustomEpgUrl').value = config.CustomEpgUrl || '';
+            byId('chkDeferEpgToGuideData').checked = config.DeferEpgToGuideData !== false;
+            byId('txtEpgDaysToFetch').value = config.EpgDaysToFetch || 2;
+            byId('txtEpgCacheMinutes').value = config.EpgCacheMinutes || 30;
+            byId('txtM3UCacheMinutes').value = config.M3UCacheMinutes || 15;
+            byId('chkDeclareDvbSubtitles').checked = !!config.DeclareDvbSubtitles;
+            byId('chkForceAudioTranscode').checked = !!config.ForceAudioTranscode;
+
+            // Catalogue
+            byId('chkSyncMovies').checked = config.SyncMovies !== false;
+            byId('chkSyncSeries').checked = config.SyncSeries !== false;
+            byId('txtLibraryPath').value = config.LibraryPath || '/config/xtream';
+            byId('chkIncludeAdultContent').checked = !!config.IncludeAdultContent;
+            byId('chkAutoIncludeNewCategories').checked = config.AutoIncludeNewCategories !== false;
+            byId('chkMergeMovieVersions').checked = config.MergeMovieVersions !== false;
+            byId('chkDetailOnOpen').checked = config.DetailOnOpen !== false;
+            byId('chkActorPhotosOnOpen').checked = config.ActorPhotosOnOpen !== false;
+            byId('txtDetailWaitSeconds').value = typeof config.DetailWaitSeconds === 'number' ? config.DetailWaitSeconds : 8;
+            byId('txtExcludedCategoryTerms').value = config.ExcludedCategoryTerms || '';
+            byId('txtContentRemoveTerms').value = config.ContentRemoveTerms || '';
+            byId('txtSyncParallelism').value = config.SyncParallelism || 4;
+            byId('txtXtreamRequestsPerSecond').value = config.XtreamRequestsPerSecond || 0;
+            var threshold = typeof config.RemovalSafetyThreshold === 'number' ? config.RemovalSafetyThreshold : 0.2;
+            byId('txtRemovalSafetyThreshold').value = Math.round(threshold * 100);
+
+            // Read-only last sync info, shown until the status route answers with its own values.
+            var lastRunEl = byId('statusLastRun');
+            var lastRun = formatTime(config.LastCatalogSyncTimestamp);
+            if (lastRun && lastRunEl.classList.contains('xtMuted')) setText(lastRunEl, lastRun, false);
+            var summaryEl = byId('statusSummary');
+            if (config.LastCatalogSyncSummary && summaryEl.classList.contains('xtMuted')) {
+                setText(summaryEl, config.LastCatalogSyncSummary, false);
+            }
+
+            // Category pickers: selection from config, list from the cache when present.
+            for (var kind in pickerKinds) {
+                if (!pickerKinds.hasOwnProperty(kind)) continue;
+                state.selectedIds[kind] = (config[pickerKinds[kind].selected] || []).slice();
+                state.categories[kind] = parseCachedJson(config[pickerKinds[kind].cache]);
+                if (state.categories[kind].length > 0) renderCategories(kind);
+            }
+
+            updateDispatcharrVisibility();
+            updateStreamEndpointWarning();
+            updateLiveTvVisibility();
+            updateEpgVisibility();
+            updateChannelCleaningVisibility();
+            updateCatalogVisibility();
+            updateLibraryPaths();
+        }
+
+        // The server may serialize the enum as its name or as its number.
+        function epgSourceToValue(value) {
+            var names = { XtreamServer: '0', CustomUrl: '1', Disabled: '2' };
+            if (names[value] !== undefined) return names[value];
+            var n = parseInt(value, 10);
+            return isNaN(n) ? '0' : String(n);
+        }
+
+        function bindForm() {
+            on(byId('xtForm'), 'submit', function (e) {
+                e.preventDefault();
+                saveConfig();
+                return false;
+            });
+        }
+
+        function saveConfig() {
+            Dashboard.showLoadingMsg();
+            // Re-read the stored configuration so server-side fields written since the page
+            // loaded (last sync summary, refreshed caches) are kept.
+            ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                collectConfig(config);
+                return ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
+                    Dashboard.processPluginConfigurationUpdateResult(result);
+                });
+            }).catch(function () {
+                Dashboard.hideLoadingMsg();
+                Dashboard.alert('Failed to save the configuration.');
+            });
+        }
+
+        function collectConfig(config) {
+            // Connection
+            config.BaseUrl = trimSlashes(byId('txtBaseUrl').value);
+            config.Username = byId('txtUsername').value.trim();
+            var password = byId('txtPassword').value;
+            if (password) config.Password = password;
+            config.HttpUserAgent = byId('txtHttpUserAgent').value.trim();
+
+            // Dispatcharr
+            config.EnableDispatcharr = byId('chkEnableDispatcharr').checked;
+            config.DispatcharrUrl = trimSlashes(byId('txtDispatcharrUrl').value);
+            config.DispatcharrUser = byId('txtDispatcharrUser').value.trim();
+            var dispatcharrPass = byId('txtDispatcharrPass').value;
+            if (dispatcharrPass) config.DispatcharrPass = dispatcharrPass;
+            config.DispatcharrFallbackToXtream = byId('chkDispatcharrFallback').checked;
+            config.DispatcharrStreamEndpoint = byId('selDispatcharrStreamEndpoint').value;
+            config.DispatcharrVideoCodecSource = byId('selDispatcharrCodecSource').value;
+            config.SelectedDispatcharrProfileIds = state.selectedProfileIds.slice();
+            if (state.profiles.length > 0) {
+                config.CachedDispatcharrProfiles = JSON.stringify(state.profiles);
+            }
+
+            // Live TV
+            config.EnableLiveTv = byId('chkEnableLiveTv').checked;
+            config.LiveTvOutputFormat = byId('selOutputFormat').value;
+            config.FallbackTranscodeBitrateMbps = Math.max(0, intValue(byId('txtFallbackTranscodeBitrate'), 0));
+            config.IncludeAdultChannels = byId('chkIncludeAdultChannels').checked;
+            config.EnableChannelNameCleaning = byId('chkEnableChannelNameCleaning').checked;
+            config.ChannelRemoveTerms = byId('txtChannelRemoveTerms').value.trim();
+            config.EpgSource = intValue(byId('selEpgSource'), 0);
+            config.CustomEpgUrl = byId('txtCustomEpgUrl').value.trim();
+            config.DeferEpgToGuideData = byId('chkDeferEpgToGuideData').checked;
+            config.EpgDaysToFetch = Math.max(1, intValue(byId('txtEpgDaysToFetch'), 2));
+            config.EpgCacheMinutes = Math.max(1, intValue(byId('txtEpgCacheMinutes'), 30));
+            config.M3UCacheMinutes = Math.max(1, intValue(byId('txtM3UCacheMinutes'), 15));
+            config.DeclareDvbSubtitles = byId('chkDeclareDvbSubtitles').checked;
+            config.ForceAudioTranscode = byId('chkForceAudioTranscode').checked;
+
+            // Catalogue
+            config.SyncMovies = byId('chkSyncMovies').checked;
+            config.SyncSeries = byId('chkSyncSeries').checked;
+            config.LibraryPath = trimSlashes(byId('txtLibraryPath').value) || '/config/xtream';
+            config.IncludeAdultContent = byId('chkIncludeAdultContent').checked;
+            config.AutoIncludeNewCategories = byId('chkAutoIncludeNewCategories').checked;
+            config.MergeMovieVersions = byId('chkMergeMovieVersions').checked;
+            config.DetailOnOpen = byId('chkDetailOnOpen').checked;
+            config.ActorPhotosOnOpen = byId('chkActorPhotosOnOpen').checked;
+            config.DetailWaitSeconds = Math.min(30, Math.max(0, intValue(byId('txtDetailWaitSeconds'), 8)));
+            config.ExcludedCategoryTerms = byId('txtExcludedCategoryTerms').value.trim();
+            config.ContentRemoveTerms = byId('txtContentRemoveTerms').value.trim();
+            config.SyncParallelism = Math.max(1, intValue(byId('txtSyncParallelism'), 4));
+            config.XtreamRequestsPerSecond = Math.max(0, intValue(byId('txtXtreamRequestsPerSecond'), 0));
+            var thresholdPct = Math.min(100, Math.max(0, intValue(byId('txtRemovalSafetyThreshold'), 20)));
+            config.RemovalSafetyThreshold = thresholdPct / 100;
+
+            // Category selections and caches
+            for (var kind in pickerKinds) {
+                if (!pickerKinds.hasOwnProperty(kind)) continue;
+                config[pickerKinds[kind].selected] = state.selectedIds[kind].slice();
+                if (state.categories[kind].length > 0) {
+                    config[pickerKinds[kind].cache] = JSON.stringify(state.categories[kind]);
+                }
+            }
+        }
+
+        // ---- Page lifecycle ----
+
+        var page = document.querySelector('#XtreamIptvConfigPage');
+
+        page.addEventListener('pageshow', function () {
+            state.view = this;
+            // Handlers are bound once per page element; Jellyfin may show the same element again.
+            if (!this.getAttribute('data-xt-bound')) {
+                this.setAttribute('data-xt-bound', '1');
+                bindTabs();
+                bindConnection();
+                bindLiveTv();
+                bindCatalog();
+                bindPickers();
+                bindForm();
+            }
+            loadConfig();
+            refreshCatalogStatus();
+            refreshLiveTvStatus();
+        });
+
+        page.addEventListener('pagehide', stopStatusPolling);
+        page.addEventListener('viewhide', stopStatusPolling);
+        page.addEventListener('viewdestroy', stopStatusPolling);
+    })();
+    </script>
+</div>
+</body>
+</html>

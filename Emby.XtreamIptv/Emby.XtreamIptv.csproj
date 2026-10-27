@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>7.3</LangVersion>
+    <AssemblyName>Emby.XtreamIptv</AssemblyName>
+    <RootNamespace>Emby.XtreamIptv</RootNamespace>
+    <Version>0.0.0-dev</Version>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release_4_10'">
+    <DefineConstants>$(DefineConstants);EMBY_4_10</DefineConstants>
+  </PropertyGroup>
+
+  <!-- Emby 4.9.x SDK (default Release config) -->
+  <ItemGroup Condition="'$(Configuration)' != 'Release_4_10'">
+    <Reference Include="MediaBrowser.Common" HintPath="$(MSBuildThisFileDirectory)../lib/emby4_9/MediaBrowser.Common.dll" Private="true" />
+    <Reference Include="MediaBrowser.Controller" HintPath="$(MSBuildThisFileDirectory)../lib/emby4_9/MediaBrowser.Controller.dll" Private="true" />
+    <Reference Include="MediaBrowser.Model" HintPath="$(MSBuildThisFileDirectory)../lib/emby4_9/MediaBrowser.Model.dll" Private="true" />
+  </ItemGroup>
+
+  <!-- Emby 4.10.0.17+ SDK (Release_4_10 config) -->
+  <ItemGroup Condition="'$(Configuration)' == 'Release_4_10'">
+    <Reference Include="MediaBrowser.Common" HintPath="$(MSBuildThisFileDirectory)../lib/emby4_10/MediaBrowser.Common.dll" Private="true" />
+    <Reference Include="MediaBrowser.Controller" HintPath="$(MSBuildThisFileDirectory)../lib/emby4_10/MediaBrowser.Controller.dll" Private="true" />
+    <Reference Include="MediaBrowser.Model" HintPath="$(MSBuildThisFileDirectory)../lib/emby4_10/MediaBrowser.Model.dll" Private="true" />
+  </ItemGroup>
+
+  <!-- Emby 4.9.x / .NET 6 compatible packages (default Release config) -->
+  <ItemGroup Condition="'$(Configuration)' != 'Release_4_10'">
+    <PackageReference Include="System.Text.Json" Version="6.0.10" />
+    <PackageReference Include="System.IO.Pipelines" Version="6.0.3" />
+    <PackageReference Include="System.Memory" Version="4.6.0" />
+  </ItemGroup>
+
+  <!-- Emby 4.10+ SDK requires Pipeline/Json v8 (Release_4_10 config) -->
+  <ItemGroup Condition="'$(Configuration)' == 'Release_4_10'">
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+    <PackageReference Include="System.IO.Pipelines" Version="8.0.0" />
+    <PackageReference Include="System.Memory" Version="4.6.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)../XtreamIptv.Shared/**/*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Configuration\Web\**" />
+    <EmbeddedResource Include="thumb.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>Emby.XtreamIptv.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>

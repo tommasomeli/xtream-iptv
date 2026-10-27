@@ -1,0 +1,2038 @@
+using System;
+using XtreamIptv;
+using XtreamIptv.Catalog;
+using XtreamIptv.LiveTv;
+using XtreamIptv.Logging;
+using Emby.XtreamIptv.Service;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Net.Http;
+using System.Threading;
+using System.Threading.Tasks;
+using XtreamIptv.Client;
+using XtreamIptv.Client.Models;
+using MediaBrowser.Common.Configuration;
+using MediaBrowser.Controller;
+using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.LiveTv;
+using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.LiveTv;
+using MediaBrowser.Model.Logging;
+using MediaBrowser.Model.MediaInfo;
+using STJ = System.Text.Json;
+
+#pragma warning disable CS0612 // SupportsProbing and AnalyzeDurationMs are obsolete but still functional
+namespace Emby.XtreamIptv.Service
+{
+    public class XtreamTunerHost : BaseTunerHost
+    {
+        internal const string TunerType = "xtream-tuner";
+
+        private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(5);
+
+        private static readonly STJ.JsonSerializerOptions JsonOptions = new STJ.JsonSerializerOptions
+        {
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString,
+            PropertyNameCaseInsensitive = true,
+        };
+
+        private static volatile XtreamTunerHost _instance;
+
+        private readonly DispatcharrClient _dispatcharrClient;
+        private readonly IServerApplicationHost _applicationHost;
+
+        private volatile Dictionary<int, StreamStatsInfo> _streamStats = new Dictionary<int, StreamStatsInfo>();
+        // Stream ID -> codec the channel's Dispatcharr stream profile emits. Built during the
+        // cached channel refresh, never at playback time: reading it per play is how BUG-007
+        // put ~3s on the first tune. Absent key means "profile says nothing", not "passthrough".
+        private volatile Dictionary<int, string> _streamProfileCodecs = new Dictionary<int, string>();
+        private volatile Dictionary<int, string> _channelUuidMap = new Dictionary<int, string>();
+        private volatile Dictionary<int, string> _tvgIdMap = new Dictionary<int, string>();
+        private volatile Dictionary<int, string> _stationIdMap = new Dictionary<int, string>();
+        private volatile Dictionary<int, double> _channelNumberMap = new Dictionary<int, double>();
+        private volatile Dictionary<string, int> _tunerChannelIdToStreamId = new Dictionary<string, int>();
+        private volatile bool _dispatcharrDataLoaded;
+        private volatile HashSet<int> _allowedStreamIds;
+        private List<ChannelInfo> _cachedChannels;
+        private DateTime _cacheTime = DateTime.MinValue;
+        private static volatile bool _gracenoteFieldDiagnosticLogged;
+
+        // Emby's built-in Gracenote (Emby Guide Data) provider type. Other listings
+        // providers (XMLTV, Schedules Direct, etc.) with high lineup overlap to plugin
+        // station IDs are likely to shadow Gracenote programs in Emby's guide rendering.
+        // See ADR-008.
+        private const string GracenoteProviderType = "embygn";
+
+
+        public int CachedChannelCount => _cachedChannels?.Count ?? 0;
+
+        public IReadOnlyDictionary<int, string> TvgIdMap => _tvgIdMap;
+        public IReadOnlyDictionary<int, string> StationIdMap => _stationIdMap;
+
+        public XtreamTunerHost(IServerApplicationHost applicationHost)
+            : base(applicationHost)
+        {
+            _instance = this;
+            _applicationHost = applicationHost;
+            _dispatcharrClient = new DispatcharrClient(new EmbyLog(Logger));
+        }
+
+        public static XtreamTunerHost Instance => _instance;
+
+        public IServerApplicationHost ApplicationHost => _applicationHost;
+
+        public Dictionary<int, StreamStatsInfo> StreamStats => _streamStats;
+
+        public override string Name => "Xtream Tuner";
+        public override string Type => TunerType;
+        public override bool IsSupported => true;
+        public override string SetupUrl => null;
+        protected override bool UseTunerHostIdAsPrefix => false;
+
+        public override TunerHostInfo GetDefaultConfiguration()
+        {
+            return new TunerHostInfo
+            {
+                Type = Type,
+                TunerCount = 1
+            };
+        }
+
+        public override bool SupportsGuideData(TunerHostInfo tuner)
+        {
+            return Plugin.Instance.Configuration.EpgSource != EpgSourceMode.Disabled;
+        }
+
+        protected override async Task<List<ProgramInfo>> GetProgramsInternal(
+            TunerHostInfo tuner, string tunerChannelId,
+            DateTimeOffset startDateUtc, DateTimeOffset endDateUtc,
+            CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance.Configuration;
+
+            int streamId;
+            if (_tunerChannelIdToStreamId.TryGetValue(tunerChannelId, out streamId))
+            {
+                // Translated station ID → stream ID via mapping
+            }
+            else if (!int.TryParse(tunerChannelId, NumberStyles.None, CultureInfo.InvariantCulture, out streamId))
+            {
+                Logger.Warn("GetProgramsInternal: cannot parse tunerChannelId '{0}'", tunerChannelId);
+                return new List<ProgramInfo>();
+            }
+
+            // If this channel has a Gracenote station ID, fetch programs directly from the
+            // listings provider rather than returning Xtream EPG. This gives the channel
+            // rich Gracenote metadata (artwork, descriptions, genres) without relying on
+            // Emby's auto-mapper - which would incorrectly match other channels too.
+            var stationMap = _stationIdMap;
+            if (stationMap != null && stationMap.TryGetValue(streamId, out var stationId)
+                && !string.IsNullOrEmpty(stationId)
+                && Plugin.Instance.Configuration.DeferEpgToGuideData)
+            {
+                try
+                {
+                    var gracenotePrograms = await FetchGracenotePrograms(
+                        stationId, tunerChannelId, startDateUtc, endDateUtc, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (gracenotePrograms != null && gracenotePrograms.Count > 0)
+                    {
+                        Logger.Debug("GetProgramsInternal: stream {0} using {1} Gracenote programs (station {2})",
+                            streamId, gracenotePrograms.Count, stationId);
+                        return gracenotePrograms;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn("GetProgramsInternal: Gracenote fetch failed for stream {0} (station {1}): {2}",
+                        streamId, stationId, ex.Message);
+                }
+
+                Logger.Debug("GetProgramsInternal: stream {0} has station ID {1} but no Gracenote data, falling back to Xtream EPG",
+                    streamId, stationId);
+            }
+
+            var liveTvService = Plugin.Instance.LiveTvService;
+            List<EpgProgram> programs;
+            try
+            {
+                programs = await liveTvService.FetchEpgForChannelCachedAsync(streamId, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("GetProgramsInternal: failed to fetch EPG for stream {0}: {1}", streamId, ex.Message);
+                programs = new List<EpgProgram>();
+            }
+
+            var startUnix = startDateUtc.ToUnixTimeSeconds();
+            var endUnix = endDateUtc.ToUnixTimeSeconds();
+
+            const long MinTimestamp = 946684800L;   // 2000-01-01
+            const long MaxTimestamp = 4102444800L;  // 2100-01-01
+
+            var result = new List<ProgramInfo>();
+            foreach (var p in programs)
+            {
+                if (p.StopTimestamp <= startUnix || p.StartTimestamp >= endUnix)
+                {
+                    continue;
+                }
+
+                if (p.StartTimestamp < MinTimestamp || p.StartTimestamp > MaxTimestamp
+                    || p.StopTimestamp < MinTimestamp || p.StopTimestamp > MaxTimestamp)
+                {
+                    Logger.Debug("GetProgramsInternal: skipping program with out-of-range timestamps " +
+                        "(start={0}, stop={1}) on channel {2}", p.StartTimestamp, p.StopTimestamp, streamId);
+                    continue;
+                }
+
+                // Skip zero-duration or reversed programs - Emby's GetProgram throws when
+                // EndDate <= StartDate, which causes the entire channel to be rejected.
+                if (p.StopTimestamp <= p.StartTimestamp)
+                {
+                    Logger.Warn("GetProgramsInternal: skipping zero-duration or reversed program " +
+                        "(start={0}, stop={1}, title='{2}') on channel {3}",
+                        p.StartTimestamp, p.StopTimestamp,
+                        p.IsPlainText ? (p.Title ?? string.Empty) : "(base64)", streamId);
+                    continue;
+                }
+
+                var title = p.IsPlainText ? p.Title : LiveTvService.DecodeBase64(p.Title);
+                var description = p.IsPlainText ? p.Description : LiveTvService.DecodeBase64(p.Description);
+                try
+                {
+                    result.Add(BuildProgramInfo(p, streamId, tunerChannelId, title, description));
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn("GetProgramsInternal: skipping program on channel {0} " +
+                        "(start={1}, stop={2}, title='{3}'): {4}",
+                        streamId, p.StartTimestamp, p.StopTimestamp,
+                        p.IsPlainText ? p.Title : "(base64)", ex.Message);
+                }
+            }
+
+            // No EPG data - return a dummy entry spanning the requested window so the channel
+            // row stays visible and clickable in the guide (matches M3U tuner behaviour).
+            if (result.Count == 0)
+            {
+                var channelName = _cachedChannels?.Find(c => c.TunerChannelId == tunerChannelId)?.Name;
+                if (!string.IsNullOrEmpty(channelName))
+                {
+                    result.Add(new ProgramInfo
+                    {
+                        Id = string.Format(CultureInfo.InvariantCulture, "xtream_dummy_{0}_{1}", streamId, startDateUtc.ToUnixTimeSeconds()),
+                        ChannelId = tunerChannelId,
+                        StartDate = startDateUtc.UtcDateTime,
+                        EndDate = endDateUtc.UtcDateTime,
+                        Name = channelName,
+                        Genres = new List<string>(),
+                    });
+                    Logger.Debug("GetProgramsInternal: no EPG for channel {0}, returning dummy entry", streamId);
+                }
+            }
+
+            if (result.Count > 0 && result.Count <= 15)
+            {
+                // Low program count - log first entry to help diagnose EPG quality issues.
+                var first = result[0];
+                Logger.Debug("GetProgramsInternal: channel {0} first program: start={1:u}, end={2:u}, name='{3}'",
+                    streamId, first.StartDate, first.EndDate, first.Name);
+            }
+
+            Logger.Debug("GetProgramsInternal: returning {0} programs for channel {1}", result.Count, streamId);
+            return result;
+        }
+
+        /// <summary>
+        /// Converts a single <see cref="EpgProgram"/> into a <see cref="ProgramInfo"/> ready for
+        /// Emby. Extracted as an internal static so it can be unit-tested without Emby DI.
+        /// </summary>
+        internal static ProgramInfo BuildProgramInfo(
+            EpgProgram p, int streamId, string tunerChannelId,
+            string title, string description)
+        {
+            var cats = p.Categories;
+            var isMovie = cats != null && cats.Exists(c =>
+                c.IndexOf("movie", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                c.IndexOf("film", System.StringComparison.OrdinalIgnoreCase) >= 0);
+            var isSports = cats != null && cats.Exists(c =>
+                c.IndexOf("sport", System.StringComparison.OrdinalIgnoreCase) >= 0);
+            var isSeries = !isMovie && !isSports;
+
+            return new ProgramInfo
+            {
+                Id = string.Format(CultureInfo.InvariantCulture, "xtream_epg_{0}_{1}", streamId, p.StartTimestamp),
+                ChannelId = tunerChannelId,
+                StartDate = DateTimeOffset.FromUnixTimeSeconds(p.StartTimestamp).UtcDateTime,
+                EndDate = DateTimeOffset.FromUnixTimeSeconds(p.StopTimestamp).UtcDateTime,
+                Name = string.IsNullOrEmpty(title) ? "Unknown" : title,
+                Overview = string.IsNullOrEmpty(description) ? null : description,
+                EpisodeTitle = string.IsNullOrEmpty(p.SubTitle) ? null : p.SubTitle,
+                IsLive = p.IsLive,
+                IsRepeat = p.IsPreviouslyShown,
+                IsNew = p.IsNew,
+                IsPremiere = p.IsPremiere,
+                ImageUrl = IsValidHttpUrl(p.ImageUrl) ? p.ImageUrl : null,
+                Genres = cats ?? new List<string>(),
+                IsSports = isSports,
+                IsNews = cats != null && cats.Exists(c =>
+                    c.IndexOf("news", System.StringComparison.OrdinalIgnoreCase) >= 0),
+                IsMovie = isMovie,
+                IsKids = cats != null && cats.Exists(c =>
+                    c.IndexOf("children", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    c.IndexOf("kids", System.StringComparison.OrdinalIgnoreCase) >= 0),
+                IsSeries = isSeries,
+                SeriesId = isSeries && !string.IsNullOrEmpty(title) ? title.ToLowerInvariant() : null,
+            };
+        }
+
+        protected override async Task<List<ChannelInfo>> GetChannelsInternal(
+            TunerHostInfo tuner, CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance.Configuration;
+
+            if (!config.EnableLiveTv)
+            {
+                return new List<ChannelInfo>();
+            }
+
+            // Return cached channels if available and not expired
+            if (_cachedChannels != null && DateTime.UtcNow - _cacheTime < CacheDuration)
+            {
+                // Emby mutates ChannelInfo objects after receiving them, clearing ListingsChannelId.
+                // Re-apply from _stationIdMap on every cache hit so the field is always correct.
+                foreach (var ch in _cachedChannels)
+                {
+                    if (config.EnableDispatcharr
+                        && _tunerChannelIdToStreamId.TryGetValue(ch.TunerChannelId, out var streamIdForLookup)
+                        && _stationIdMap.TryGetValue(streamIdForLookup, out var stId)
+                        && !string.IsNullOrEmpty(stId))
+                        ch.ListingsChannelId = stId;
+                    else
+                        ch.ListingsChannelId = null;
+                }
+                var cachedGracenote = _cachedChannels.Count(c => c.ListingsChannelId != null);
+                Logger.Debug("Returning cached channel list ({0} channels, {1} with Gracenote station ID)",
+                    _cachedChannels.Count, cachedGracenote);
+
+                // Run detach+artwork-clear even on cache hits so that "Refresh Guide Data"
+                // always triggers it, not just when the 5-minute channel cache expires.
+                if (config.DeferEpgToGuideData && cachedGracenote > 0)
+                {
+                    _ = Task.Run(() =>
+                    {
+                        try { DetachListingProviders(); }
+                        catch (Exception ex) { Logger.Warn("Auto detach (cache hit) failed: {0}", ex.Message); }
+                    });
+                }
+
+                return _cachedChannels;
+            }
+
+            Logger.Info("Fetching channels from Xtream API");
+
+            var liveTvService = Plugin.Instance.LiveTvService;
+            var newStats = new Dictionary<int, StreamStatsInfo>();
+            var newProfileCodecs = new Dictionary<int, string>();
+
+            // All three fetches run concurrently; each handles its own errors internally.
+            async Task<List<LiveStreamInfo>> channelsFetch()
+            {
+                try
+                {
+                    return await liveTvService.GetFilteredChannelsAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (!(ex is TaskCanceledException) && !(ex is OperationCanceledException))
+                {
+                    Logger.Warn("LiveTvService channel fetch failed, falling back to direct API: {0}", ex.Message);
+                    // The same category and adult filters as the normal fetch, or a single failed
+                    // request would show channels the user switched off.
+                    var all = await FetchAllChannelsDirectAsync(config).ConfigureAwait(false);
+                    return LiveTvService.ApplyChannelFilters(all, config);
+                }
+            }
+
+            async Task<Dictionary<int, string>> categoriesFetch()
+            {
+                try
+                {
+                    var cats = await liveTvService.GetLiveCategoriesAsync(cancellationToken).ConfigureAwait(false);
+                    Logger.Debug("Fetched {0} live categories for guide chips", cats.Count);
+                    return cats.ToDictionary(c => c.CategoryId, c => c.CategoryName);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn("Failed to fetch live categories for guide chips: {0}", ex.Message);
+                    return new Dictionary<int, string>();
+                }
+            }
+
+            async Task dispatcharrFetch()
+            {
+                if (!config.EnableDispatcharr || string.IsNullOrEmpty(config.DispatcharrUrl))
+                    return;
+                try
+                {
+                    var data = await FetchDispatcharrDataAsync(config, cancellationToken).ConfigureAwait(false);
+                    newStats = data.Stats;
+                    newProfileCodecs = data.ProfileCodecs;
+                    _channelUuidMap = data.UuidMap;
+                    _tvgIdMap = data.TvgIdMap;
+                    _stationIdMap = data.StationIdMap;
+                    _channelNumberMap = data.ChannelNumberMap;
+                    _allowedStreamIds = data.AllowedStreamIds;
+                    _dispatcharrDataLoaded = true;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn("Failed to fetch Dispatcharr channel data: {0}", ex.Message);
+                }
+            }
+
+            var channelsTask = channelsFetch();
+            var categoriesTask = categoriesFetch();
+            var dispatcharrTask = dispatcharrFetch();
+
+            await Task.WhenAll(channelsTask, categoriesTask, dispatcharrTask).ConfigureAwait(false);
+
+            var channels = channelsTask.Result;
+            var categoryMap = categoriesTask.Result;
+            int statsCount = newStats.Count;
+
+            // Profile filtering: if a profile filter is active, restrict the Xtream channel list
+            // to only those channels whose stream ID is in the allowed set.
+            var allowedIds = _allowedStreamIds;
+            if (allowedIds != null)
+            {
+                var before = channels.Count;
+                channels = channels.Where(c => allowedIds.Contains(c.StreamId)).ToList();
+                Logger.Info("Profile filter applied: {0} → {1} channels ({2} excluded)",
+                    before, channels.Count, before - channels.Count);
+            }
+
+            var usedStationIds = new HashSet<string>(StringComparer.Ordinal);
+            var newTunerChannelIdToStreamId = new Dictionary<string, int>();
+
+            var result = channels.Select(channel =>
+            {
+                var cleanName = ChannelNameCleaner.CleanChannelName(
+                    channel.Name,
+                    config.ChannelRemoveTerms,
+                    config.EnableChannelNameCleaning);
+
+                var streamIdStr = channel.StreamId.ToString(CultureInfo.InvariantCulture);
+
+                string[] tags = null;
+                if (channel.CategoryId.HasValue
+                    && categoryMap.TryGetValue(channel.CategoryId.Value, out var groupTitle)
+                    && !string.IsNullOrEmpty(groupTitle))
+                {
+                    tags = new[] { groupTitle };
+                }
+
+                // Determine TunerChannelId: use Gracenote station ID for guide matching
+                // when available, otherwise use stream ID. Emby's matching waterfall uses
+                // TunerChannelId (not ListingsChannelId) to correlate channels with guide data.
+                string tunerChannelId = streamIdStr;
+                string listingsChannelId = null;
+                if (config.EnableDispatcharr
+                    && _stationIdMap.TryGetValue(channel.StreamId, out var stationId)
+                    && !string.IsNullOrEmpty(stationId))
+                {
+                    if (usedStationIds.Add(stationId))
+                    {
+                        tunerChannelId = stationId;
+                        listingsChannelId = stationId;
+                        Logger.Debug("Stream {0} ({1}): TunerChannelId = {2} (Gracenote station ID)",
+                            channel.StreamId, cleanName, stationId);
+                    }
+                    else
+                    {
+                        Logger.Warn("Stream {0} ({1}): duplicate station ID {2}, falling back to stream ID as TunerChannelId",
+                            channel.StreamId, cleanName, stationId);
+                    }
+                }
+
+                newTunerChannelIdToStreamId[tunerChannelId] = channel.StreamId;
+
+                string channelNumber;
+                if (config.EnableDispatcharr
+                    && _channelNumberMap.TryGetValue(channel.StreamId, out var dispatcharrNum))
+                {
+                    // Use Dispatcharr's real channel_number (supports decimals like 2.1).
+                    // Format as integer when there is no fractional part (e.g. 5.0 → "5").
+                    channelNumber = dispatcharrNum == Math.Floor(dispatcharrNum)
+                        ? ((int)dispatcharrNum).ToString(CultureInfo.InvariantCulture)
+                        : dispatcharrNum.ToString("G", CultureInfo.InvariantCulture);
+                }
+                else
+                {
+                    channelNumber = channel.Num.ToString(CultureInfo.InvariantCulture);
+                }
+
+                string callSign = null;
+                if (config.EnableDispatcharr
+                    && _tvgIdMap.TryGetValue(channel.StreamId, out var tvgId)
+                    && !string.IsNullOrEmpty(tvgId))
+                {
+                    callSign = tvgId;
+                }
+
+                return new ChannelInfo
+                {
+                    Id = CreateEmbyChannelId(tuner, streamIdStr),
+                    TunerChannelId = tunerChannelId,
+                    Name = cleanName,
+                    Number = channelNumber,
+                    CallSign = callSign,
+                    ImageUrl = string.IsNullOrEmpty(channel.StreamIcon) ? null : channel.StreamIcon,
+                    ChannelType = ChannelType.TV,
+                    TunerHostId = tuner.Id,
+                    Tags = tags,
+                    ListingsChannelId = listingsChannelId,
+                };
+            }).ToList();
+
+            _streamStats = newStats;
+            _streamProfileCodecs = newProfileCodecs;
+            _tunerChannelIdToStreamId = newTunerChannelIdToStreamId;
+            _cachedChannels = result;
+            _cacheTime = DateTime.UtcNow;
+            var gracenoteCount = result.Count(c => c.ListingsChannelId != null);
+            Logger.Info("Channel list cached with {0} channels ({1} with stream stats, {2} with Gracenote station ID)",
+                result.Count, statsCount, gracenoteCount);
+
+            if (config.DeferEpgToGuideData && gracenoteCount > 0)
+            {
+                _ = Task.Run(() =>
+                {
+                    try
+                    {
+                        var updated = DetachListingProviders();
+                        if (updated > 0)
+                            Logger.Info("Auto-detached Xtream tuner from {0} listing provider(s) - Gracenote EPG will be fetched by the tuner directly", updated);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Warn("Auto detach listing providers failed: {0}", ex.Message);
+                    }
+                });
+
+                _ = Task.Run(() =>
+                {
+                    try { StampGracenoteLogosOntoChannels(result); }
+                    catch (Exception ex) { Logger.Warn("Gracenote logo stamping failed: {0}", ex.Message); }
+                });
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// BUG-023: when a channel has a Gracenote station ID but no Dispatcharr-supplied
+        /// <see cref="ChannelInfo.ImageUrl"/>, look up a logo from each configured listings
+        /// provider and stamp it onto the channel in place. The plugin auto-detaches from
+        /// listings providers when <c>DeferEpgToGuideData</c> is on (to prevent BUG-018
+        /// wrong-channel auto-mapping), which also kills Emby's normal cross-match for
+        /// logos. This method restores the logo without re-attaching.
+        ///
+        /// Only fills in when <c>ImageUrl</c> is empty - Dispatcharr-supplied logos always win.
+        ///
+        /// On first invocation per process, also logs a diagnostic block dumping a few
+        /// sample <see cref="ChannelInfo"/> records and probing which field carries the
+        /// station ID, so we can confirm the field-match assumption against real provider
+        /// data without a second round-trip with the reporter.
+        /// </summary>
+        private void StampGracenoteLogosOntoChannels(List<ChannelInfo> channels)
+        {
+            ILiveTvManager liveTvManager;
+            IConfigurationManager configManager;
+            try
+            {
+                liveTvManager = _applicationHost.Resolve<ILiveTvManager>();
+                configManager = _applicationHost.Resolve<IConfigurationManager>();
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("StampGracenoteLogos: failed to resolve services: {0}", ex.Message);
+                return;
+            }
+
+            var liveTvOptions = configManager.GetConfiguration("livetv") as LiveTvOptions;
+            var providers = liveTvManager.ListingProviders;
+            if (liveTvOptions?.ListingProviders == null || liveTvOptions.ListingProviders.Length == 0
+                || providers == null || providers.Length == 0)
+            {
+                return;
+            }
+
+            var firstRunDiagnostic = !_gracenoteFieldDiagnosticLogged;
+            _gracenoteFieldDiagnosticLogged = true;
+
+            // On the first run each provider's lineup is also checked for shadowing (ADR-008),
+            // which needs every plugin station ID.
+            var allPluginStationIds = firstRunDiagnostic
+                ? new HashSet<string>(
+                    _stationIdMap.Values.Where(s => !string.IsNullOrEmpty(s)),
+                    StringComparer.OrdinalIgnoreCase)
+                : null;
+
+            // Channel-side fields we'll consult to associate a tuner channel with a
+            // listings-provider channel. ListingsChannelId is where the plugin already
+            // stashes the Gracenote station ID (see GetChannelsInternal line 449), so
+            // it's the natural match key.
+            var channelsByStationId = channels
+                .Where(c => !string.IsNullOrEmpty(c.ListingsChannelId)
+                            && string.IsNullOrEmpty(c.ImageUrl))
+                .GroupBy(c => c.ListingsChannelId, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+            if (channelsByStationId.Count == 0 && !firstRunDiagnostic)
+            {
+                return;
+            }
+
+            var matchedFieldCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+            int totalStamped = 0;
+
+            foreach (var listingsProvider in providers)
+            {
+                var infos = liveTvOptions.ListingProviders
+                    .Where(p => string.Equals(p.Type, listingsProvider.Type, StringComparison.OrdinalIgnoreCase)
+                                && !string.IsNullOrEmpty(p.Id))
+                    .ToList();
+
+                foreach (var info in infos)
+                {
+                    var providerLabel = string.Format(CultureInfo.InvariantCulture,
+                        "{0}/{1} (id={2})", listingsProvider.Name, info.ListingsId, info.Id);
+
+                    List<ChannelInfo> providerChannels;
+                    try
+                    {
+                        providerChannels = listingsProvider.GetChannels(info, CancellationToken.None)
+                            .GetAwaiter().GetResult();
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Debug("Listings provider {0}: GetChannels threw: {1}", providerLabel, ex.Message);
+                        continue;
+                    }
+
+                    if (providerChannels == null || providerChannels.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    if (firstRunDiagnostic)
+                    {
+                        // ADR-008 / BUG-023: a non-Gracenote listings provider that covers
+                        // most of the plugin's station IDs is likely to shadow Gracenote
+                        // programs in Emby's guide rendering. Warn so users can spot the
+                        // dual-provider conflict from the log without external help.
+                        int coveredStationIdCount;
+                        if (IsLikelyShadowingProvider(
+                                listingsProvider.Type, allPluginStationIds, providerChannels,
+                                out coveredStationIdCount))
+                        {
+                            Logger.Warn(
+                                "WARNING: listings provider {0} (type='{1}') covers {2}/{3} of your Gracenote station IDs. " +
+                                "Its programs may shadow Gracenote data in the Emby guide. " +
+                                "If channels are showing placeholder EPG (channel name as program title, fixed-duration blocks), " +
+                                "remove this listings provider from Emby's Live TV settings.",
+                                providerLabel, listingsProvider.Type, coveredStationIdCount, allPluginStationIds.Count);
+                        }
+                    }
+
+                    var stamped = StampLogosFromProviderChannels(
+                        channelsByStationId, providerChannels, matchedFieldCounts);
+                    totalStamped += stamped;
+                }
+            }
+
+            if (totalStamped > 0)
+            {
+                var breakdown = string.Join(", ",
+                    matchedFieldCounts.Select(kv => string.Format(CultureInfo.InvariantCulture, "{0}={1}", kv.Key, kv.Value)));
+                Logger.Info("Stamped Gracenote logos onto {0} channel(s) (matched via: {1})",
+                    totalStamped, breakdown);
+            }
+            else if (channelsByStationId.Count > 0)
+            {
+                Logger.Info("StampGracenoteLogos: 0 logos stamped - {0} channel(s) had a station ID but no listings provider returned a matching channel with an image URL",
+                    channelsByStationId.Count);
+            }
+        }
+
+        /// <summary>
+        /// ADR-008 shadowing detection. A non-Gracenote listings provider whose channel
+        /// lineup covers at least half of the plugin's Gracenote station IDs is treated
+        /// as a likely shadow risk: Emby's guide rendering layer will read its programs
+        /// for those station IDs and overlay them on top of the plugin's returned data.
+        /// Coverage is measured as DISTINCT plugin station IDs that appear in ANY of
+        /// <c>Id</c>, <c>ListingsChannelId</c>, <c>TunerChannelId</c>, or
+        /// <c>AlternateNames</c> on any provider channel - duplicates count once.
+        /// </summary>
+        /// <returns>True if a warning should be logged for this provider.</returns>
+        internal static bool IsLikelyShadowingProvider(
+            string providerType,
+            HashSet<string> allPluginStationIds,
+            List<ChannelInfo> providerChannels,
+            out int coveredStationIdCount)
+        {
+            coveredStationIdCount = 0;
+            if (allPluginStationIds == null || allPluginStationIds.Count == 0)
+                return false;
+            if (providerChannels == null || providerChannels.Count == 0)
+                return false;
+
+            var covered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var ch in providerChannels)
+            {
+                if (!string.IsNullOrEmpty(ch.Id) && allPluginStationIds.Contains(ch.Id))
+                    covered.Add(ch.Id);
+                if (!string.IsNullOrEmpty(ch.ListingsChannelId) && allPluginStationIds.Contains(ch.ListingsChannelId))
+                    covered.Add(ch.ListingsChannelId);
+                if (!string.IsNullOrEmpty(ch.TunerChannelId) && allPluginStationIds.Contains(ch.TunerChannelId))
+                    covered.Add(ch.TunerChannelId);
+                if (ch.AlternateNames != null)
+                {
+                    foreach (var alt in ch.AlternateNames)
+                    {
+                        if (!string.IsNullOrEmpty(alt) && allPluginStationIds.Contains(alt))
+                            covered.Add(alt);
+                    }
+                }
+            }
+            coveredStationIdCount = covered.Count;
+
+            if (string.Equals(providerType, GracenoteProviderType, StringComparison.OrdinalIgnoreCase))
+                return false;
+            return coveredStationIdCount * 2 >= allPluginStationIds.Count;
+        }
+
+        /// <summary>
+        /// Pure stamping logic, extracted for unit-testability. Walks
+        /// <paramref name="providerChannels"/> once and, for each channel that has an
+        /// <see cref="ChannelInfo.ImageUrl"/>, probes its candidate station-ID fields
+        /// (<c>Id</c>, <c>ListingsChannelId</c>, <c>TunerChannelId</c>, then each
+        /// <c>AlternateNames</c> entry, in that order) against
+        /// <paramref name="channelsByStationId"/>. First field-match wins per provider
+        /// channel - subsequent fields on the same channel won't double-stamp.
+        /// Increments <paramref name="matchedFieldCounts"/> for the field that matched.
+        /// Returns total stamps applied.
+        /// </summary>
+        internal static int StampLogosFromProviderChannels(
+            Dictionary<string, ChannelInfo> channelsByStationId,
+            List<ChannelInfo> providerChannels,
+            Dictionary<string, int> matchedFieldCounts)
+        {
+            int totalStamped = 0;
+            foreach (var pc in providerChannels)
+            {
+                if (string.IsNullOrEmpty(pc.ImageUrl))
+                    continue;
+
+                if (TryStampLogo(channelsByStationId, pc.Id, pc.ImageUrl))
+                    IncrementCount(matchedFieldCounts, "Id", ref totalStamped);
+                if (TryStampLogo(channelsByStationId, pc.ListingsChannelId, pc.ImageUrl))
+                    IncrementCount(matchedFieldCounts, "ListingsChannelId", ref totalStamped);
+                if (TryStampLogo(channelsByStationId, pc.TunerChannelId, pc.ImageUrl))
+                    IncrementCount(matchedFieldCounts, "TunerChannelId", ref totalStamped);
+                if (pc.AlternateNames != null)
+                {
+                    foreach (var altName in pc.AlternateNames)
+                    {
+                        if (TryStampLogo(channelsByStationId, altName, pc.ImageUrl))
+                            IncrementCount(matchedFieldCounts, "AlternateNames", ref totalStamped);
+                    }
+                }
+            }
+            return totalStamped;
+        }
+
+        private static bool TryStampLogo(
+            Dictionary<string, ChannelInfo> channelsByStationId,
+            string candidateStationId,
+            string imageUrl)
+        {
+            if (string.IsNullOrEmpty(candidateStationId))
+                return false;
+            if (!channelsByStationId.TryGetValue(candidateStationId, out var ch))
+                return false;
+            if (!string.IsNullOrEmpty(ch.ImageUrl))
+                return false;  // another field-match already stamped it; don't double-count
+            ch.ImageUrl = imageUrl;
+            return true;
+        }
+
+        private static void IncrementCount(Dictionary<string, int> counts, string key, ref int total)
+        {
+            if (counts.TryGetValue(key, out var n))
+                counts[key] = n + 1;
+            else
+                counts[key] = 1;
+            total++;
+        }
+
+        private static async Task<List<LiveStreamInfo>> FetchAllChannelsDirectAsync(PluginConfiguration config)
+        {
+            using (var httpClient = Plugin.CreateHttpClient(30))
+            {
+                var url = XtreamUrls.PlayerApi(config, "get_live_streams");
+
+                var json = await httpClient.GetStringAsync(url).ConfigureAwait(false);
+                return STJ.JsonSerializer.Deserialize<List<LiveStreamInfo>>(json, JsonOptions)
+                    ?? new List<LiveStreamInfo>();
+            }
+        }
+
+        protected override async Task<List<MediaSourceInfo>> GetChannelStreamMediaSources(
+            TunerHostInfo tuner, MediaBrowser.Controller.Entities.BaseItem dbChannel,
+            ChannelInfo tunerChannel, CancellationToken cancellationToken)
+        {
+            if (!TryResolveStreamId(tunerChannel, out int streamId))
+            {
+                return new List<MediaSourceInfo>();
+            }
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+
+            await EnsureStatsLoadedAsync(cancellationToken).ConfigureAwait(false);
+            Logger.Info("[stream-timing] ch={0} EnsureStats={1}ms", tunerChannel?.Name, sw.ElapsedMilliseconds);
+            sw.Restart();
+
+            var config = Plugin.Instance.Configuration;
+            var (streamUrl, isDispatcharr) = BuildStreamUrl(config, streamId);
+            Logger.Info("[stream-timing] ch={0} BuildUrl={1}ms isDispatcharr={2}", tunerChannel?.Name, sw.ElapsedMilliseconds, isDispatcharr);
+            sw.Restart();
+
+            if (streamUrl == null)
+            {
+                return new List<MediaSourceInfo>();
+            }
+
+            _streamStats.TryGetValue(streamId, out var stats);
+
+            // What Emby is told the video codec is. On the Dispatcharr path the answer comes from
+            // the channel's stream profile, which states what the proxy emits; stream_stats only
+            // says what it ingested, and those differ whenever the profile transcodes (issue #66).
+            // A direct Xtream fallback URL carries the ingested codec by definition, so the
+            // profile does not apply there.
+            string profileCodec;
+            _streamProfileCodecs.TryGetValue(streamId, out profileCodec);
+            var declaredVideoCodec = ResolveVideoCodec(
+                isDispatcharr, config.DispatcharrVideoCodecSource, profileCodec,
+                stats?.VideoCodec != null ? MapVideoCodec(stats.VideoCodec) : null);
+
+            var mediaSource = CreateMediaSourceInfo(streamId, streamUrl, stats, isDispatcharr, config.ForceAudioTranscode, config.HttpUserAgent, config.FallbackTranscodeBitrateMbps, config.DeclareDvbSubtitles, declaredVideoCodec, Logger);
+            Logger.Info("[stream-timing] ch={0} CreateMediaSource={1}ms hasStats={2}", tunerChannel?.Name, sw.ElapsedMilliseconds, stats != null);
+
+            return new List<MediaSourceInfo> { mediaSource };
+        }
+
+        protected override async Task<ILiveStream> GetChannelStream(
+            TunerHostInfo tuner, MediaBrowser.Controller.Entities.BaseItem dbChannel,
+            ChannelInfo tunerChannel, string mediaSourceId,
+            CancellationToken cancellationToken)
+        {
+            if (!TryResolveStreamId(tunerChannel, out int streamId))
+            {
+                throw new System.IO.FileNotFoundException(
+                    string.Format("Channel {0} not found in Xtream tuner", tunerChannel?.Id));
+            }
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+
+            await EnsureStatsLoadedAsync(cancellationToken).ConfigureAwait(false);
+            Logger.Info("[stream-timing] ch={0} EnsureStats={1}ms", tunerChannel?.Name, sw.ElapsedMilliseconds);
+            sw.Restart();
+
+            var config = Plugin.Instance.Configuration;
+            var (streamUrl, isDispatcharr) = BuildStreamUrl(config, streamId);
+            if (streamUrl == null)
+            {
+                throw new System.IO.FileNotFoundException(
+                    string.Format("Channel {0}: Dispatcharr proxy unavailable and fallback disabled", streamId));
+            }
+            _streamStats.TryGetValue(streamId, out var stats);
+            Logger.Info("[stream-timing] ch={0} BuildUrl={1}ms isDispatcharr={2}", tunerChannel?.Name, sw.ElapsedMilliseconds, isDispatcharr);
+            sw.Restart();
+
+            // What Emby is told the video codec is. On the Dispatcharr path the answer comes from
+            // the channel's stream profile, which states what the proxy emits; stream_stats only
+            // says what it ingested, and those differ whenever the profile transcodes (issue #66).
+            // A direct Xtream fallback URL carries the ingested codec by definition, so the
+            // profile does not apply there.
+            string profileCodec;
+            _streamProfileCodecs.TryGetValue(streamId, out profileCodec);
+            var declaredVideoCodec = ResolveVideoCodec(
+                isDispatcharr, config.DispatcharrVideoCodecSource, profileCodec,
+                stats?.VideoCodec != null ? MapVideoCodec(stats.VideoCodec) : null);
+
+            var mediaSource = CreateMediaSourceInfo(streamId, streamUrl, stats, isDispatcharr, config.ForceAudioTranscode, config.HttpUserAgent, config.FallbackTranscodeBitrateMbps, config.DeclareDvbSubtitles, declaredVideoCodec, Logger);
+            Logger.Info("[stream-timing] ch={0} CreateMediaSource={1}ms hasStats={2}", tunerChannel?.Name, sw.ElapsedMilliseconds, stats != null);
+
+            var httpClient = Plugin.CreateHttpClient();
+            ILiveStream liveStream = new XtreamLiveStream(mediaSource, tuner.Id, httpClient, Logger);
+
+            // Append a unique suffix per session so Emby's MediaSourceManager treats each
+            // session independently. Without this, two sessions on the same channel share
+            // one XtreamLiveStream (both have MediaSource.Id = "xtream_live_N"), and when the
+            // first session closes its consumer, RemoveConsumer drops the count to 0 and kills
+            // the shared live stream - taking the second session with it (issue #43).
+            mediaSource.Id = BuildSessionMediaSourceId(mediaSource.Id, ((XtreamLiveStream)liveStream).UniqueId);
+
+            Logger.Info("Opening live stream for channel {0} (stream {1})",
+                tunerChannel?.Name ?? tunerChannel?.Id, streamId);
+
+            return liveStream;
+        }
+
+        /// <summary>
+        /// Builds a per-session unique media source ID by appending a session-specific suffix.
+        /// Shared by the production code and tests so a change to the suffix formula is caught.
+        /// </summary>
+        internal static string BuildSessionMediaSourceId(string baseId, string uniqueId)
+            => baseId + "_" + uniqueId;
+
+        public void ClearCaches()
+        {
+            _cachedChannels = null;
+            _cacheTime = DateTime.MinValue;
+            _streamStats = new Dictionary<int, StreamStatsInfo>();
+            _streamProfileCodecs = new Dictionary<int, string>();
+            _channelUuidMap = new Dictionary<int, string>();
+            _tvgIdMap = new Dictionary<int, string>();
+            _stationIdMap = new Dictionary<int, string>();
+            _channelNumberMap = new Dictionary<int, double>();
+            _tunerChannelIdToStreamId = new Dictionary<string, int>();
+            _allowedStreamIds = null;
+            _dispatcharrDataLoaded = false;
+            Logger.Info("Xtream tuner caches cleared");
+        }
+
+        /// <summary>
+        /// Removes the Xtream tuner from all listing providers' enabled-tuner lists so
+        /// that Emby's auto-mapper does not assign (wrong) Gracenote entries to our
+        /// channels. Instead, <see cref="GetProgramsInternal"/> fetches Gracenote programs
+        /// directly for channels that have a station ID and returns Xtream EPG for the rest.
+        /// </summary>
+        /// <returns>Number of listing providers updated.</returns>
+        public int DetachListingProviders()
+        {
+            IConfigurationManager configManager;
+            try
+            {
+                configManager = _applicationHost.Resolve<IConfigurationManager>();
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("DetachListingProviders: failed to resolve IConfigurationManager: {0}", ex.Message);
+                return 0;
+            }
+
+            LiveTvOptions liveTvOptions;
+            try
+            {
+                liveTvOptions = configManager.GetConfiguration("livetv") as LiveTvOptions;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("DetachListingProviders: failed to read LiveTvOptions: {0}", ex.Message);
+                return 0;
+            }
+
+            if (liveTvOptions?.ListingProviders == null || liveTvOptions.ListingProviders.Length == 0)
+            {
+                Logger.Info("DetachListingProviders: no listing providers configured");
+                return 0;
+            }
+
+            var xtreamTunerIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (liveTvOptions.TunerHosts != null)
+            {
+                foreach (var th in liveTvOptions.TunerHosts)
+                {
+                    if (string.Equals(th.Type, TunerType, StringComparison.OrdinalIgnoreCase)
+                        && !string.IsNullOrEmpty(th.Id))
+                    {
+                        xtreamTunerIds.Add(th.Id);
+                    }
+                }
+            }
+
+            if (xtreamTunerIds.Count == 0)
+            {
+                Logger.Info("DetachListingProviders: no Xtream tuner hosts found in config");
+                return 0;
+            }
+
+            var allTunerIds = liveTvOptions.TunerHosts?
+                .Where(t => !string.IsNullOrEmpty(t.Id))
+                .Select(t => t.Id)
+                .ToArray() ?? Array.Empty<string>();
+
+            int updated = 0;
+            bool configChanged = false;
+
+            foreach (var provider in liveTvOptions.ListingProviders)
+            {
+                if (string.IsNullOrEmpty(provider.Id))
+                    continue;
+
+                bool coversXtream;
+                if (provider.EnableAllTuners)
+                {
+                    coversXtream = true;
+                }
+                else
+                {
+                    coversXtream = provider.EnabledTuners != null
+                        && provider.EnabledTuners.Any(id => xtreamTunerIds.Contains(id));
+                }
+
+                if (!coversXtream)
+                    continue;
+
+                if (provider.EnableAllTuners)
+                {
+                    provider.EnableAllTuners = false;
+                    provider.EnabledTuners = allTunerIds
+                        .Where(id => !xtreamTunerIds.Contains(id))
+                        .ToArray();
+                }
+                else
+                {
+                    provider.EnabledTuners = provider.EnabledTuners
+                        .Where(id => !xtreamTunerIds.Contains(id))
+                        .ToArray();
+                }
+
+                Logger.Info("DetachListingProviders: removed Xtream tuner from provider '{0}' (id={1}), remaining tuners: [{2}]",
+                    provider.Name ?? provider.ListingsId, provider.Id,
+                    string.Join(", ", provider.EnabledTuners));
+                updated++;
+                configChanged = true;
+            }
+
+            if (configChanged)
+            {
+                try
+                {
+                    configManager.SaveConfiguration("livetv", liveTvOptions);
+                    Logger.Info("DetachListingProviders: saved config, {0} providers updated", updated);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn("DetachListingProviders: failed to save config: {0}", ex.Message);
+                    return 0;
+                }
+
+                ClearWrongChannelArtwork();
+            }
+            else
+            {
+                Logger.Info("DetachListingProviders: Xtream tuner already detached from all providers");
+            }
+
+            return updated;
+        }
+
+        /// <summary>
+        /// Deletes all cached images from Live TV channels that belong to the Xtream tuner.
+        /// Clears ALL Xtream channels (including Gracenote-matched ones) because Emby's
+        /// auto-mapper may have assigned artwork from the wrong station during the brief
+        /// window before the plugin detached. Correct artwork returns on the next guide
+        /// refresh from the proper source.
+        /// </summary>
+        private void ClearWrongChannelArtwork()
+        {
+            try
+            {
+                var libraryManager = _applicationHost.Resolve<ILibraryManager>();
+
+                // Resolve LiveTvChannel type at runtime to avoid a hard compile-time dependency
+                // on internal Emby types not exposed in the SDK.
+                Type liveTvChannelType = null;
+                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    try
+                    {
+                        liveTvChannelType = asm.GetType("MediaBrowser.Controller.LiveTv.LiveTvChannel");
+                        if (liveTvChannelType != null) break;
+                    }
+                    catch { }
+                }
+
+                if (liveTvChannelType == null)
+                {
+                    Logger.Warn("ClearWrongChannelArtwork: LiveTvChannel type not found");
+                    return;
+                }
+
+                var internalQueryType = AppDomain.CurrentDomain.GetAssemblies()
+                    .Select(a => { try { return a.GetType("MediaBrowser.Controller.Entities.InternalItemsQuery"); } catch { return null; } })
+                    .FirstOrDefault(t => t != null);
+
+                if (internalQueryType == null)
+                {
+                    Logger.Warn("ClearWrongChannelArtwork: InternalItemsQuery type not found");
+                    return;
+                }
+
+                var query = Activator.CreateInstance(internalQueryType);
+                var includeItemTypesProp = internalQueryType.GetProperty("IncludeItemTypes");
+                if (includeItemTypesProp != null)
+                    includeItemTypesProp.SetValue(query, new[] { "LiveTvChannel" });
+
+                var getItemListMethod = typeof(ILibraryManager).GetMethods()
+                    .FirstOrDefault(m => m.Name == "GetItemList"
+                        && m.GetParameters().Length == 1
+                        && m.GetParameters()[0].ParameterType == internalQueryType);
+
+                if (getItemListMethod == null)
+                {
+                    Logger.Warn("ClearWrongChannelArtwork: GetItemList method not found");
+                    return;
+                }
+
+                var items = getItemListMethod.Invoke(libraryManager, new[] { query }) as System.Collections.IEnumerable;
+                if (items == null)
+                {
+                    Logger.Info("ClearWrongChannelArtwork: GetItemList returned null");
+                    return;
+                }
+
+                // Build a lookup of Xtream channel numbers for ownership check.
+                // ServiceName on LiveTvChannel is set by Emby's internal service layer
+                // (typically "Emby"), not the tuner host Name, so we can't filter on it.
+                var cachedChannels = _cachedChannels;
+                if (cachedChannels == null || cachedChannels.Count == 0)
+                {
+                    Logger.Info("ClearWrongChannelArtwork: no cached channels - skipping");
+                    return;
+                }
+
+                var xtreamChannelNumbers = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var ch in cachedChannels)
+                {
+                    if (!string.IsNullOrEmpty(ch.Number))
+                        xtreamChannelNumbers.Add(ch.Number);
+                }
+
+                int cleared = 0;
+                int noImages = 0;
+                int totalLibraryChannels = 0;
+
+                foreach (var item in items)
+                {
+                    try
+                    {
+                        totalLibraryChannels++;
+
+                        var numberProp = item.GetType().GetProperty("Number");
+                        var channelNumber = numberProp?.GetValue(item) as string;
+
+                        if (string.IsNullOrEmpty(channelNumber) || !xtreamChannelNumbers.Contains(channelNumber))
+                            continue;
+
+                        var imageInfosProp = item.GetType().GetProperty("ImageInfos");
+                        var imageInfos = imageInfosProp?.GetValue(item) as System.Array;
+                        if (imageInfos == null || imageInfos.Length == 0)
+                        {
+                            noImages++;
+                            continue;
+                        }
+
+                        var nameProp = item.GetType().GetProperty("Name");
+                        var channelName = nameProp?.GetValue(item) as string ?? channelNumber;
+
+                        imageInfosProp.SetValue(item, Array.CreateInstance(imageInfos.GetType().GetElementType(), 0));
+
+                        var updateMethods = typeof(ILibraryManager).GetMethods()
+                            .Where(m => m.Name == "UpdateItem" && m.GetParameters().Length == 3)
+                            .ToArray();
+
+                        if (updateMethods.Length > 0)
+                        {
+                            updateMethods[0].Invoke(libraryManager, new object[] { item, null, 4 });
+                        }
+
+                        Logger.Debug("ClearWrongChannelArtwork: cleared {0} image(s) from '{1}' (ch {2})",
+                            imageInfos.Length, channelName, channelNumber);
+                        cleared++;
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Warn("ClearWrongChannelArtwork: error clearing item: {0}", ex.Message);
+                    }
+                }
+
+                Logger.Info("ClearWrongChannelArtwork: {0} library channels, {1} matched Xtream, cleared {2}, {3} already clean",
+                    totalLibraryChannels, cleared + noImages, cleared, noImages);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("ClearWrongChannelArtwork: {0}", ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Fetches Gracenote programs from the first listing provider that returns data
+        /// for the given station ID. Returns null if no provider has programs.
+        /// </summary>
+        private async Task<List<ProgramInfo>> FetchGracenotePrograms(
+            string stationId, string tunerChannelId,
+            DateTimeOffset startDateUtc, DateTimeOffset endDateUtc,
+            CancellationToken cancellationToken)
+        {
+            ILiveTvManager liveTvManager;
+            IConfigurationManager configManager;
+            try
+            {
+                liveTvManager = _applicationHost.Resolve<ILiveTvManager>();
+                configManager = _applicationHost.Resolve<IConfigurationManager>();
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("FetchGracenotePrograms: failed to resolve services: {0}", ex.Message);
+                return null;
+            }
+
+            LiveTvOptions liveTvOptions;
+            try
+            {
+                liveTvOptions = configManager.GetConfiguration("livetv") as LiveTvOptions;
+            }
+            catch
+            {
+                return null;
+            }
+
+            if (liveTvOptions?.ListingProviders == null)
+                return null;
+
+            var providers = liveTvManager.ListingProviders;
+            if (providers == null || providers.Length == 0)
+                return null;
+
+            foreach (var listingsProvider in providers)
+            {
+                var info = liveTvOptions.ListingProviders
+                    .FirstOrDefault(p => string.Equals(p.Type, listingsProvider.Type, StringComparison.OrdinalIgnoreCase)
+                                         && !string.IsNullOrEmpty(p.Id));
+                if (info == null)
+                    continue;
+
+                try
+                {
+                    var programs = await listingsProvider.GetProgramsAsync(
+                        info, stationId, startDateUtc, endDateUtc, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (programs != null && programs.Count > 0)
+                    {
+                        var result = new List<ProgramInfo>(programs.Count);
+                        foreach (var p in programs)
+                        {
+                            p.ChannelId = tunerChannelId;
+                            result.Add(p);
+                        }
+                        return result;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug("FetchGracenotePrograms: provider '{0}' returned no data for station {1}: {2}",
+                        info.Name ?? info.ListingsId, stationId, ex.Message);
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Ensures Dispatcharr stats and UUID mappings are loaded. Called lazily
+        /// on first playback if GetChannelsInternal hasn't run yet (e.g. after restart),
+        /// and from LiveTvService before generating M3U output so that tvg-id and
+        /// tvc-guide-stationid attributes are available even when Emby hasn't polled
+        /// the tuner for channels yet (e.g. immediately after a cache refresh).
+        /// Uses a flag rather than checking map counts so that a legitimately empty
+        /// stats map (all URL-based sources with no stats) doesn't cause a redundant
+        /// Dispatcharr API round-trip on every playback request.
+        /// </summary>
+        internal async Task EnsureStatsLoadedAsync(CancellationToken cancellationToken)
+        {
+            if (_dispatcharrDataLoaded)
+            {
+                return;
+            }
+
+            var config = Plugin.Instance.Configuration;
+            if (!config.EnableDispatcharr || string.IsNullOrEmpty(config.DispatcharrUrl))
+            {
+                return;
+            }
+
+            Logger.Info("Dispatcharr data missing at playback time, fetching on-demand");
+
+            try
+            {
+                var data = await FetchDispatcharrDataAsync(config, cancellationToken).ConfigureAwait(false);
+                // Unlike a full refresh, keep what is already loaded when a map comes back empty.
+                if (data.Stats.Count > 0) _streamStats = data.Stats;
+                if (data.ProfileCodecs.Count > 0) _streamProfileCodecs = data.ProfileCodecs;
+                if (data.UuidMap.Count > 0) _channelUuidMap = data.UuidMap;
+                if (data.TvgIdMap.Count > 0) _tvgIdMap = data.TvgIdMap;
+                if (data.StationIdMap.Count > 0) _stationIdMap = data.StationIdMap;
+                if (data.ChannelNumberMap.Count > 0) _channelNumberMap = data.ChannelNumberMap;
+                _allowedStreamIds = data.AllowedStreamIds;
+                _dispatcharrDataLoaded = true;
+                Logger.Info("Loaded {0} UUIDs and {1} stream stats from Dispatcharr on-demand",
+                    data.UuidMap.Count, data.Stats.Count);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("On-demand Dispatcharr data fetch failed: {0}", ex.Message);
+            }
+        }
+
+        private bool TryResolveStreamId(ChannelInfo tunerChannel, out int streamId)
+        {
+            streamId = 0;
+            if (tunerChannel == null) return false;
+
+            var id = tunerChannel.TunerChannelId ?? tunerChannel.Id;
+
+            // Check authoritative mapping first (handles station ID → stream ID translation)
+            if (_tunerChannelIdToStreamId.TryGetValue(id, out streamId))
+                return true;
+
+            // Fallback: parse directly (before channel list is loaded)
+            return int.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out streamId);
+        }
+
+        private (string Url, bool IsDispatcharr) BuildStreamUrl(PluginConfiguration config, int streamId)
+        {
+            var result = ResolveStreamUrl(config, streamId, _channelUuidMap);
+            switch (result.Route)
+            {
+                case StreamRoute.DispatcharrProxy:
+                    Logger.Debug("Stream {0}: using Dispatcharr proxy URL (uuid={1})", streamId,
+                        _channelUuidMap.TryGetValue(streamId, out var uuid) ? uuid : "?");
+                    break;
+                case StreamRoute.DispatcharrXtream:
+                    // Never log the URL itself: the Xtream password is in its path.
+                    Logger.Debug("Stream {0}: using Dispatcharr Xtream URL", streamId);
+                    break;
+                case StreamRoute.Skipped:
+                    Logger.Warn("Stream {0}: no Dispatcharr UUID and fallback disabled, skipping", streamId);
+                    break;
+                case StreamRoute.DirectXtream:
+                    if (config.EnableDispatcharr && !string.IsNullOrEmpty(config.DispatcharrUrl))
+                        Logger.Debug("Stream {0}: no Dispatcharr UUID, falling back to direct Xtream URL", streamId);
+                    break;
+            }
+
+            if (result.XtreamEndpointIgnored && !_xtreamEndpointWarned)
+            {
+                _xtreamEndpointWarned = true;
+                Logger.Warn("Dispatcharr stream URL is set to Xtream, but the Xtream server URL is not the " +
+                    "Dispatcharr URL. Using the Dispatcharr proxy URL instead, so streams keep going through Dispatcharr.");
+            }
+
+            return (result.Url, result.Route == StreamRoute.DispatcharrProxy || result.Route == StreamRoute.DispatcharrXtream);
+        }
+
+        private volatile bool _xtreamEndpointWarned;
+
+        internal enum StreamRoute { DispatcharrProxy, DispatcharrXtream, DirectXtream, Skipped }
+
+        internal struct StreamUrlResult
+        {
+            public string Url;
+            public StreamRoute Route;
+
+            /// <summary>True when the Xtream endpoint was asked for but could not be used.</summary>
+            public bool XtreamEndpointIgnored;
+        }
+
+        /// <summary>
+        /// Decides which URL a channel plays from. A channel Dispatcharr knows (it has a UUID)
+        /// plays from Dispatcharr: the proxy URL by default, or the Xtream URL of the connection
+        /// above when <see cref="PluginConfiguration.DispatcharrStreamEndpoint"/> is <c>xtream</c>
+        /// and that connection is the Dispatcharr server. Either way it counts as a Dispatcharr
+        /// stream (no probing, profile codec wins), since both URLs run through Dispatcharr's proxy
+        /// code (ADR-001, ADR-022). The Xtream URL is always <c>.ts</c>, matching the proxy URL.
+        /// </summary>
+        internal static StreamUrlResult ResolveStreamUrl(
+            PluginConfiguration config, int streamId, IReadOnlyDictionary<int, string> uuidMap)
+        {
+            var result = new StreamUrlResult();
+            if (config.EnableDispatcharr && !string.IsNullOrEmpty(config.DispatcharrUrl))
+            {
+                if (uuidMap.TryGetValue(streamId, out var uuid))
+                {
+                    if (string.Equals(config.DispatcharrStreamEndpoint, "xtream", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (IsSameServer(config.BaseUrl, config.DispatcharrUrl))
+                        {
+                            result.Url = BuildXtreamUrl(config, streamId, "ts");
+                            result.Route = StreamRoute.DispatcharrXtream;
+                            return result;
+                        }
+
+                        result.XtreamEndpointIgnored = true;
+                    }
+
+                    result.Url = string.Format(CultureInfo.InvariantCulture,
+                        "{0}/proxy/ts/stream/{1}",
+                        config.DispatcharrUrl.TrimEnd('/'), uuid);
+                    result.Route = StreamRoute.DispatcharrProxy;
+                    return result;
+                }
+
+                if (!config.DispatcharrFallbackToXtream)
+                {
+                    result.Route = StreamRoute.Skipped;
+                    return result;
+                }
+            }
+
+            var extension = string.Equals(config.LiveTvOutputFormat, "ts", StringComparison.OrdinalIgnoreCase)
+                ? "ts" : "m3u8";
+            result.Url = BuildXtreamUrl(config, streamId, extension);
+            result.Route = StreamRoute.DirectXtream;
+            return result;
+        }
+
+        private static string BuildXtreamUrl(PluginConfiguration config, int streamId, string extension)
+        {
+            return XtreamUrls.Stream(config, "live", streamId, extension);
+        }
+
+        /// <summary>
+        /// Same scheme, host, port and path (ignoring a trailing slash). The path matters behind a
+        /// reverse proxy, where <c>/provider</c> and <c>/dispatcharr</c> on one host are different
+        /// services.
+        /// </summary>
+        internal static bool IsSameServer(string a, string b)
+        {
+            if (!Uri.TryCreate(a?.Trim(), UriKind.Absolute, out var ua) ||
+                !Uri.TryCreate(b?.Trim(), UriKind.Absolute, out var ub))
+                return false;
+
+            return string.Equals(ua.Scheme, ub.Scheme, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(ua.Host, ub.Host, StringComparison.OrdinalIgnoreCase)
+                && ua.Port == ub.Port
+                && string.Equals(ua.AbsolutePath.TrimEnd('/'), ub.AbsolutePath.TrimEnd('/'), StringComparison.Ordinal);
+        }
+
+        private sealed class DispatcharrData
+        {
+            public Dictionary<int, string> UuidMap;
+            public Dictionary<int, StreamStatsInfo> Stats;
+            public Dictionary<int, string> TvgIdMap;
+            public Dictionary<int, string> StationIdMap;
+            public HashSet<int> AllowedStreamIds;
+            public Dictionary<int, double> ChannelNumberMap;
+            public Dictionary<int, string> ProfileCodecs;
+        }
+
+        /// <summary>
+        /// Fetches everything the tuner uses from Dispatcharr: channel data filtered by the selected
+        /// channel profiles, plus the codec each stream profile emits. Stores nothing; the channel
+        /// refresh and the on-demand load at playback time apply the result differently.
+        /// </summary>
+        private async Task<DispatcharrData> FetchDispatcharrDataAsync(PluginConfiguration config, CancellationToken cancellationToken)
+        {
+            _dispatcharrClient.Configure(config.DispatcharrUser, config.DispatcharrPass);
+
+            HashSet<int> enabledChannelIds = null;
+            if (config.SelectedDispatcharrProfileIds != null && config.SelectedDispatcharrProfileIds.Length > 0)
+            {
+                var profiles = await _dispatcharrClient.GetProfilesAsync(
+                    config.DispatcharrUrl, cancellationToken).ConfigureAwait(false);
+                enabledChannelIds = new HashSet<int>();
+                foreach (var profile in profiles)
+                {
+                    if (Array.IndexOf(config.SelectedDispatcharrProfileIds, profile.Id) >= 0)
+                    {
+                        foreach (var chId in profile.Channels)
+                            enabledChannelIds.Add(chId);
+                    }
+                }
+                Logger.Info("Profile filter active: {0} profile(s), {1} enabled Dispatcharr channel IDs",
+                    config.SelectedDispatcharrProfileIds.Length, enabledChannelIds.Count);
+            }
+
+            // Started before the channel-data request so the two small profile requests ride along
+            // with it. On the on-demand path this runs inside a tune, and extra serial round trips
+            // in front of playback is the BUG-007 shape.
+            var profileFetch = StartStreamProfileFetch(config.DispatcharrUrl, cancellationToken);
+
+            var (uuidMap, statsMap, tvgIdMap, stationIdMap, allowedStreamIds, channelNumberMap, streamProfileIdMap) =
+                await _dispatcharrClient.GetChannelDataAsync(
+                    config.DispatcharrUrl, cancellationToken, enabledChannelIds).ConfigureAwait(false);
+            var profileCodecs = await BuildProfileCodecMapAsync(profileFetch, streamProfileIdMap)
+                .ConfigureAwait(false);
+
+            return new DispatcharrData
+            {
+                UuidMap = uuidMap,
+                Stats = statsMap,
+                TvgIdMap = tvgIdMap,
+                StationIdMap = stationIdMap,
+                AllowedStreamIds = allowedStreamIds,
+                ChannelNumberMap = channelNumberMap,
+                ProfileCodecs = profileCodecs,
+            };
+        }
+
+        /// <summary>
+        /// Starts the two stream-profile requests without awaiting them, so they overlap with
+        /// the channel-data request that follows. On the on-demand path this matters: that runs
+        /// during a tune, and serialising extra Dispatcharr round trips in front of playback is
+        /// what BUG-007 was about.
+        /// </summary>
+        private (Task<List<DispatcharrStreamProfile>> Profiles, Task<int?> DefaultId) StartStreamProfileFetch(
+            string dispatcharrUrl, CancellationToken cancellationToken)
+        {
+            return (
+                _dispatcharrClient.GetStreamProfilesAsync(dispatcharrUrl, cancellationToken),
+                _dispatcharrClient.GetDefaultStreamProfileIdAsync(dispatcharrUrl, cancellationToken));
+        }
+
+        /// <summary>
+        /// Turns the in-flight profile requests plus the per-stream profile assignments into a
+        /// stream-id → emitted-codec map. Every failure mode degrades to an empty map, which
+        /// means the codec from stream_stats is used exactly as before.
+        /// </summary>
+        private async Task<Dictionary<int, string>> BuildProfileCodecMapAsync(
+            (Task<List<DispatcharrStreamProfile>> Profiles, Task<int?> DefaultId) fetch,
+            Dictionary<int, int> streamProfileIds)
+        {
+            try
+            {
+                var profiles = await fetch.Profiles.ConfigureAwait(false);
+                var defaultProfileId = await fetch.DefaultId.ConfigureAwait(false);
+
+                if (streamProfileIds == null || streamProfileIds.Count == 0)
+                    return new Dictionary<int, string>();
+
+                if (profiles == null || profiles.Count == 0)
+                {
+                    Logger.Info("Dispatcharr stream profiles unavailable - falling back to the reported codec");
+                    return new Dictionary<int, string>();
+                }
+
+                var map = StreamProfileCodec.BuildCodecMap(streamProfileIds, profiles, defaultProfileId);
+                Logger.Info("Resolved output codec from Dispatcharr stream profiles for {0} of {1} streams",
+                    map.Count, streamProfileIds.Count);
+                return map;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("Could not resolve Dispatcharr stream profile codecs: {0}", ex.Message);
+                return new Dictionary<int, string>();
+            }
+        }
+
+        // internal static so the factory can be exercised by unit tests without an
+        // XtreamTunerHost instance (the constructor requires IServerApplicationHost).
+        // The factory is otherwise pure: it touches no instance state. Three debug logs
+        // route through LogDebug so the static signature stays clean - pass null to
+        // suppress logging in tests, pass an ILogger in production callsites.
+        internal static MediaSourceInfo CreateMediaSourceInfo(
+            int streamId, string streamUrl, StreamStatsInfo stats,
+            bool disableProbing = false, bool forceAudioTranscode = false,
+            string userAgent = null, int fallbackBitrateMbps = 0, bool declareDvbSubtitles = false,
+            string declaredVideoCodec = null, ILogger logger = null)
+        {
+            var sourceId = "xtream_live_" + streamId.ToString(CultureInfo.InvariantCulture);
+
+            // Audio-only channel: Dispatcharr stats are present but no video_codec exists.
+            // The normal hasStats gate (VideoCodec != null) would fall through to the dummy
+            // H.264 fallback, which causes Emby to expect a video stream that isn't there.
+            // Audio detection is independent of the video codec question - audio_codec is
+            // reliable in both pass-through and transcoded Dispatcharr stream profiles.
+            bool isAudioOnly = stats != null
+                && stats.VideoCodec == null
+                && !string.IsNullOrEmpty(stats.AudioCodec);
+
+            // The codec from stream_stats is what Dispatcharr ingested. The caller decides what
+            // is actually declared (see ResolveVideoCodec) and passes it in; a null means it had
+            // no better answer, so the ingested codec stands.
+            var statsVideoCodec = stats?.VideoCodec != null ? MapVideoCodec(stats.VideoCodec) : null;
+
+            // hasStats reflects "Dispatcharr returned stats for this channel", NOT
+            // "the video codec from stats is trusted": resolution, FPS, bitrate, audio
+            // codec and audio channels are honoured whatever the codec turns out to be.
+            // Previously this was `hasVideoCodecFromStats || isAudioOnly`, which dropped
+            // ALL stats for video channels with the codec opt-out on - caught by
+            // CodeRabbit review on PR #67 head 3c6d056.
+            bool hasStats = HasStats(stats != null, isAudioOnly);
+
+            // Disable probing for Dispatcharr proxy URLs: the probe opens a short-lived HTTP
+            // connection that Dispatcharr interprets as a client, and when it closes after
+            // analysis (~0.1s) Dispatcharr tears down the channel. The real playback
+            // connection then hits the teardown and fails, causing a rapid retry storm.
+            // AGENTS.md makes this rule absolute: probing MUST stay disabled for Dispatcharr
+            // proxy URLs regardless of stats availability. The fix for issue #66 lives in
+            // the codec declaration path (see ResolveVideoCodec + the MediaStream build
+            // below), not in relaxing this flag.
+            bool suppressProbing = ShouldSuppressProbing(disableProbing, hasStats);
+
+            var audioCodecLower = hasStats && !string.IsNullOrEmpty(stats.AudioCodec)
+                ? stats.AudioCodec.ToLowerInvariant() : null;
+
+            // When ForceAudioTranscode is enabled, disable direct-stream so Emby transcodes
+            // audio (→ AAC on iOS/Apple TV). This fixes silent AC3 playback on Apple devices.
+            // If stats are available and confirm a non-AC3 codec, direct-stream is safe and
+            // kept enabled. Without stats we can't verify the codec, so we also force
+            // transcoding - the user has opted in and accepted that trade-off.
+            bool suppressDirectStream = forceAudioTranscode &&
+                (!hasStats || audioCodecLower == "ac3" || audioCodecLower == "eac3" || audioCodecLower == "mp2");
+
+            var mediaSource = new MediaSourceInfo
+            {
+                Id = sourceId,
+                Path = streamUrl,
+                Protocol = MediaProtocol.Http,
+                Container = "mpegts",
+                SupportsProbing = !suppressProbing,
+                IsRemote = true,
+                IsInfiniteStream = true,
+                SupportsDirectPlay = false,
+                SupportsDirectStream = !suppressDirectStream,
+                SupportsTranscoding = true,
+                AnalyzeDurationMs = suppressProbing ? 0 : (int?)500,
+                RequiresOpening = true,
+                RequiresClosing = true,
+                WallClockStart = DateTime.UtcNow,
+            };
+
+            if (!string.IsNullOrEmpty(userAgent))
+            {
+                mediaSource.RequiredHttpHeaders = new Dictionary<string, string>
+                {
+                    ["User-Agent"] = userAgent
+                };
+            }
+
+            if (hasStats)
+            {
+                var mediaStreams = new List<MediaStream>();
+
+                if (!isAudioOnly)
+                {
+                    // Parse resolution (e.g. "1920x1080")
+                    int width = 0, height = 0;
+                    if (!string.IsNullOrEmpty(stats.Resolution))
+                    {
+                        var parts = stats.Resolution.Split('x');
+                        if (parts.Length == 2)
+                        {
+                            int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out width);
+                            int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out height);
+                        }
+                    }
+
+                    // Never hand Emby a null codec. The no-stats branch below documents why:
+                    // RecordingRequiresEncoding dereferences the field, so a recording on a
+                    // channel with no codec throws instead of starting. H.264 is the same
+                    // fallback that branch uses and the overwhelmingly common IPTV output.
+                    var videoCodec = !string.IsNullOrEmpty(declaredVideoCodec)
+                        ? declaredVideoCodec
+                        : (statsVideoCodec ?? "h264");
+
+                    // Profile, level, bit depth and reference frames describe the ingested
+                    // codec. They only carry over when what we declare IS that codec.
+                    var declareCodecAttributes = ShouldDeclareCodecAttributes(videoCodec, statsVideoCodec);
+
+                    var videoStream = new MediaStream
+                    {
+                        Type = MediaStreamType.Video,
+                        Index = 0,
+                        Codec = videoCodec,
+                        IsInterlaced = false,
+                        PixelFormat = "yuv420p",
+                    };
+
+                    if (width > 0) videoStream.Width = width;
+                    if (height > 0) videoStream.Height = height;
+                    videoStream.DisplayTitle = BuildVideoDisplayTitle(height, videoCodec);
+                    if (stats.SourceFps.HasValue)
+                    {
+                        videoStream.RealFrameRate = (float)stats.SourceFps.Value;
+                        videoStream.AverageFrameRate = (float)stats.SourceFps.Value;
+                    }
+                    if (stats.Bitrate.HasValue) videoStream.BitRate = (int)(stats.Bitrate.Value * 1000);
+
+                    // When the profile transcodes, these describe the source rather than the bytes
+                    // Emby receives: a level number means something different in HEVC than in
+                    // H.264, and bit depth and reference frames need not survive a re-encode.
+                    // Resolution, FPS and ffmpeg_output_bitrate describe the output either way.
+                    if (declareCodecAttributes)
+                    {
+                        if (!string.IsNullOrEmpty(stats.VideoProfile))
+                            videoStream.Profile = stats.VideoProfile;
+                        if (stats.VideoLevel.HasValue)
+                            videoStream.Level = (double)stats.VideoLevel.Value;
+                        if (stats.VideoBitDepth.HasValue)
+                            videoStream.BitDepth = stats.VideoBitDepth.Value;
+                        if (stats.VideoRefFrames.HasValue)
+                            videoStream.RefFrames = stats.VideoRefFrames.Value;
+                    }
+
+                    mediaStreams.Add(videoStream);
+                }
+
+                // Prefer the audio_channels field from stream_stats when present (Dispatcharr
+                // 0.19.0+ includes it as e.g. "5.1", "2.0", "stereo").  Fall back to
+                // codec-based broadcast defaults when the field is absent.
+                int? audioChannels = null;
+                string channelLayout = null;
+                if (!string.IsNullOrEmpty(stats.AudioChannels))
+                {
+                    audioChannels = ParseAudioChannelCount(stats.AudioChannels);
+                    channelLayout = stats.AudioChannels.Contains(".")
+                        ? stats.AudioChannels  // e.g. "5.1", "7.1"
+                        : stats.AudioChannels; // e.g. "stereo", "mono"
+                }
+                else if (audioCodecLower == "ac3" || audioCodecLower == "eac3")
+                {
+                    audioChannels = 6;
+                    channelLayout = "5.1(side)";
+                }
+                else if (audioCodecLower == "mp2" || audioCodecLower == "mp1")
+                {
+                    audioChannels = 2;
+                    channelLayout = "stereo";
+                }
+
+                var audioStream = new MediaStream
+                {
+                    Type = MediaStreamType.Audio,
+                    Index = isAudioOnly ? 0 : 1,
+                    Codec = audioCodecLower ?? "aac",
+                    Channels = audioChannels,
+                    ChannelLayout = channelLayout,
+                    SampleRate = stats.SampleRate,
+                };
+                // For audio-only channels set the bitrate so Emby doesn't assume its
+                // 40 Mbps live-TV default and force a transcode at low quality settings.
+                if (isAudioOnly)
+                {
+                    if (stats.AudioBitrate.HasValue)
+                        audioStream.BitRate = (int)(stats.AudioBitrate.Value * 1000);
+                    else if (stats.Bitrate.HasValue)
+                        audioStream.BitRate = (int)(stats.Bitrate.Value * 1000);
+                }
+                else
+                {
+                    if (stats.AudioBitrate.HasValue)
+                        audioStream.BitRate = (int)(stats.AudioBitrate.Value * 1000);
+                    else if (audioCodecLower == "ac3") audioStream.BitRate = 384000;
+                    else if (audioCodecLower == "eac3") audioStream.BitRate = 640000;
+                    else if (audioCodecLower == "aac") audioStream.BitRate = 128000;
+                    else if (audioCodecLower == "mp2" || audioCodecLower == "mp1") audioStream.BitRate = 256000;
+                }
+
+                if (!string.IsNullOrEmpty(stats.AudioLanguage))
+                    audioStream.Language = stats.AudioLanguage;
+
+                audioStream.DisplayTitle = channelLayout != null
+                    ? $"{(audioCodecLower ?? "aac").ToUpperInvariant()} {channelLayout}"
+                    : (audioCodecLower ?? "aac").ToUpperInvariant();
+
+                mediaStreams.Add(audioStream);
+
+                if (declareDvbSubtitles)
+                {
+                    // Infer language from the audio track - subtitle language matches audio on DVB
+                    var subLang = !string.IsNullOrEmpty(stats?.AudioLanguage) ? stats.AudioLanguage : null;
+                    var langLabel = subLang?.ToUpperInvariant();
+
+                    mediaStreams.Add(new MediaStream
+                    {
+                        Type = MediaStreamType.Subtitle,
+                        Index = mediaStreams.Count,
+                        Codec = "dvb_subtitle",
+                        Language = subLang,
+                        IsExternal = false,
+                        IsForced = false,
+                        IsDefault = false,
+                        DisplayTitle = langLabel != null ? langLabel + " DVBSUB" : "DVB Subtitles",
+                    });
+
+                    mediaStreams.Add(new MediaStream
+                    {
+                        Type = MediaStreamType.Subtitle,
+                        Index = mediaStreams.Count,
+                        Codec = "dvb_subtitle",
+                        Language = subLang,
+                        IsExternal = false,
+                        IsForced = false,
+                        IsDefault = false,
+                        IsHearingImpaired = true,
+                        DisplayTitle = langLabel != null ? langLabel + " SDH DVBSUB" : "DVB Subtitles SDH",
+                    });
+                }
+
+                mediaSource.MediaStreams = mediaStreams;
+                mediaSource.DefaultAudioStreamIndex = isAudioOnly ? 0 : 1;
+
+                if (isAudioOnly)
+                {
+                    LogDebug(logger,
+                        "Stream {0}: audio-only - {1} {2}ch{3}",
+                        streamId, audioCodecLower ?? "unknown",
+                        audioChannels.HasValue ? audioChannels.Value.ToString(CultureInfo.InvariantCulture) : "?",
+                        suppressDirectStream ? " [force transcode]" : string.Empty);
+                }
+                else
+                {
+                    int width = 0, height = 0;
+                    if (!string.IsNullOrEmpty(stats.Resolution))
+                    {
+                        var parts = stats.Resolution.Split('x');
+                        if (parts.Length == 2)
+                        {
+                            int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out width);
+                            int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out height);
+                        }
+                    }
+                    LogDebug(logger,
+                        "Stream {0}: using stats - {1} {2}x{3} @{4}fps, audio {5} {6}ch{7}",
+                        streamId, stats.VideoCodec, width, height,
+                        stats.SourceFps, audioCodecLower ?? "unknown",
+                        audioChannels.HasValue ? audioChannels.Value.ToString(CultureInfo.InvariantCulture) : "?",
+                        suppressDirectStream ? " [force transcode]" : string.Empty);
+                }
+            }
+            else
+            {
+                // No stats - provide defaults so hardware decoding can still be attempted.
+                // Codec must be non-null: Emby's RecordingRequiresEncoding accesses it
+                // directly and throws NullReferenceException when it is null.  H.264/AAC
+                // are the most common IPTV codecs and serve as safe fallbacks.
+                var videoStream = new MediaStream
+                {
+                    Type = MediaStreamType.Video,
+                    Index = 0,
+                    Codec = "h264",
+                    IsInterlaced = false,
+                    PixelFormat = "yuv420p",
+                    DisplayTitle = "H264",
+                };
+                var audioStream = new MediaStream
+                {
+                    Type = MediaStreamType.Audio,
+                    Index = 1,
+                    Codec = "aac",
+                    DisplayTitle = "AAC",
+                };
+
+                // Optional bitrate cap: Emby Web defaults the transcode target to the
+                // user's max bandwidth setting (~200 Mbps for "Auto"), which exceeds
+                // consumer hardware encoder caps (e.g. Intel QuickSync's ~39 Mbit/s)
+                // and forces a fallback to software x265 - too slow for live playback.
+                // Off by default since most users either run Streamflow (which provides
+                // real bitrate) or have hardware that can target 200 Mbps without issue.
+                if (fallbackBitrateMbps > 0)
+                {
+                    int videoBps = fallbackBitrateMbps * 1_000_000;
+                    videoStream.BitRate = videoBps;
+                    audioStream.BitRate = 192_000;
+                    mediaSource.Bitrate = videoBps + 192_000;
+                }
+
+                mediaSource.MediaStreams = new List<MediaStream> { videoStream, audioStream };
+                mediaSource.DefaultAudioStreamIndex = 1;
+                LogDebug(logger,
+                    "Stream {0}: no stats available, {1} (fallback bitrate {2} Mbps)",
+                    streamId, suppressProbing ? "probing disabled" : "will probe",
+                    fallbackBitrateMbps);
+            }
+
+            return mediaSource;
+        }
+
+        // Null-tolerant debug logger. Production callsites pass an ILogger pulled from
+        // BaseTunerHost.Logger; unit tests pass null to suppress log noise. The factory
+        // is otherwise pure - wrapping the log call in a null check keeps the static
+        // signature without forcing test infrastructure to stub an IServerApplicationHost.
+        private static void LogDebug(ILogger logger, string format, params object[] args)
+        {
+            if (logger == null) return;
+            logger.Debug(format, args);
+        }
+
+        /// <summary>
+        /// Parses an ffmpeg-style audio channel layout string ("5.1", "7.1", "stereo",
+        /// "mono", "2.0") into a channel count.  Returns null for unrecognised values.
+        /// </summary>
+        internal static int? ParseAudioChannelCount(string layout)
+        {
+            if (string.IsNullOrEmpty(layout)) return null;
+            var lower = layout.ToLowerInvariant().Trim();
+            if (lower == "mono") return 1;
+            if (lower == "stereo") return 2;
+            // "X.Y" format: total = X + Y  (e.g. "5.1" → 6, "7.1" → 8, "2.0" → 2)
+            var dot = lower.IndexOf('.');
+            if (dot > 0 &&
+                int.TryParse(lower.Substring(0, dot), NumberStyles.None, CultureInfo.InvariantCulture, out int main) &&
+                int.TryParse(lower.Substring(dot + 1), NumberStyles.None, CultureInfo.InvariantCulture, out int lfe))
+            {
+                return main + lfe;
+            }
+            if (int.TryParse(lower, NumberStyles.None, CultureInfo.InvariantCulture, out int plain))
+                return plain;
+            return null;
+        }
+
+        private static bool IsValidHttpUrl(string url)
+        {
+            if (string.IsNullOrEmpty(url)) return false;
+            Uri uri;
+            return Uri.TryCreate(url, UriKind.Absolute, out uri)
+                && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+        }
+
+        // Values accepted by PluginConfiguration.DispatcharrVideoCodecSource. Anything else,
+        // including the empty string an upgraded config XML starts with, means automatic.
+        internal const string CodecSourceAuto = "auto";
+        internal const string CodecSourceStats = "stats";
+        internal const string CodecSourceH264 = "h264";
+        internal const string CodecSourceHevc = "hevc";
+
+        internal static string MapVideoCodec(string dispatcharrCodec)
+        {
+            var upper = dispatcharrCodec.ToUpperInvariant();
+            if (upper == "H264" || upper == "AVC") return "h264";
+            if (upper == "HEVC" || upper == "H265") return "hevc";
+            if (upper == "MPEG2VIDEO") return "mpeg2video";
+            return dispatcharrCodec.ToLowerInvariant();
+        }
+
+        /// <summary>
+        /// Decides whether the Live TV MediaSource should be probed by Emby.
+        /// Extracted from <see cref="CreateMediaSourceInfo"/> so a regression test can
+        /// exercise the decision without instantiating a full MediaSourceInfo. Probing
+        /// is suppressed on Dispatcharr URLs because the probe opens a short-lived HTTP
+        /// connection that Dispatcharr interprets as a client and tears down on close,
+        /// causing a retry storm. AGENTS.md makes this rule absolute for `/proxy/ts/stream/{uuid}`
+        /// URLs: probing MUST stay off regardless of stats availability. Issue #66 lives
+        /// in the codec-declaration path, not in relaxing this flag.
+        /// </summary>
+        internal static bool ShouldSuppressProbing(bool disableProbing, bool hasStats)
+        {
+            return disableProbing || hasStats;
+        }
+
+        /// <summary>
+        /// Decides whether the Live TV <c>MediaSource</c> should populate stat-derived
+        /// fields (resolution, FPS, bitrate, audio codec, audio channels, video profile,
+        /// level, bit depth, reference frames). True iff Dispatcharr returned stats for
+        /// the channel - independent of which codec ends up declared, which
+        /// <see cref="ResolveVideoCodec"/> decides separately.
+        /// Regression test for issue #66 follow-up: the original
+        /// <c>hasVideoCodecFromStats || isAudioOnly</c> expression dropped every stat
+        /// on a video channel with the opt-out on, leaving Emby with no resolution, no
+        /// FPS, and no audio info. CodeRabbit review on PR #67 head 3c6d056.
+        /// </summary>
+        internal static bool HasStats(bool statsPresent, bool isAudioOnly)
+        {
+            // statsPresent mirrors "stats != null" upstream; isAudioOnly is implied by
+            // statsPresent (it requires stats.VideoCodec == null && AudioCodec != ""),
+            // so the helper returns statsPresent alone. Kept as a two-argument signature
+            // for symmetry with ShouldSuppressProbing and to document the audio-only
+            // assumption at the call site.
+            _ = isAudioOnly;
+            return statsPresent;
+        }
+
+        /// <summary>
+        /// Decides which video codec is declared on the Live TV <c>MediaStream</c>.
+        /// <para>
+        /// On the Dispatcharr path the profile wins: it states what the proxy emits, while
+        /// <c>stream_stats.video_codec</c> only reports what Dispatcharr ingested. Those differ
+        /// whenever the stream profile transcodes, and declaring the ingested codec is what made
+        /// every HEVC-sourced channel fail to play in issue #66.
+        /// </para>
+        /// <para>
+        /// A direct Xtream URL carries the provider's own bytes, so the ingested codec is the
+        /// right answer there and the Dispatcharr setting does not apply. Returns null when
+        /// nothing is known, which the factory turns into its H.264 fallback rather than a null
+        /// codec.
+        /// </para>
+        /// </summary>
+        internal static string ResolveVideoCodec(
+            bool isDispatcharr, string codecSource, string profileCodec, string statsCodec)
+        {
+            if (!isDispatcharr) return statsCodec;
+
+            switch ((codecSource ?? string.Empty).Trim().ToLowerInvariant())
+            {
+                // Pre-#66 behaviour: trust what Dispatcharr reports. Correct for pass-through
+                // profiles and available as an escape when detection reads a profile wrongly.
+                case CodecSourceStats:
+                    return statsCodec;
+
+                // Manual overrides for installs where the profile cannot be read at all
+                // (restricted account, older Dispatcharr) but the user knows the output.
+                case CodecSourceH264:
+                    return "h264";
+                case CodecSourceHevc:
+                    return "hevc";
+
+                // Automatic (default): the profile when it gave an answer, otherwise the
+                // reported codec, which leaves pass-through installs exactly as they were.
+                default:
+                    return profileCodec ?? statsCodec;
+            }
+        }
+
+        /// <summary>
+        /// Decides whether the codec-specific attributes from <c>stream_stats</c> (profile,
+        /// level, bit depth, reference frames) may be declared. They describe the ingested
+        /// codec, so they only hold when that is also the codec being declared.
+        /// </summary>
+        internal static bool ShouldDeclareCodecAttributes(string declaredCodec, string statsCodec)
+        {
+            return !string.IsNullOrEmpty(declaredCodec)
+                && !string.IsNullOrEmpty(statsCodec)
+                && string.Equals(declaredCodec, statsCodec, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Builds the human-readable title for the Live TV video <c>MediaStream</c>.
+        /// The codec is resolved by <see cref="ResolveVideoCodec"/> and is never empty on the
+        /// stats path, so the usual shape is "1080p H264". The height-only and codec-only
+        /// shapes cover stats that carry no parsable resolution.
+        /// </summary>
+        internal static string BuildVideoDisplayTitle(int height, string videoCodec)
+        {
+            if (height > 0 && !string.IsNullOrEmpty(videoCodec))
+            {
+                return $"{height}p {videoCodec.ToUpperInvariant()}";
+            }
+            if (height > 0)
+            {
+                return $"{height}p";
+            }
+            if (!string.IsNullOrEmpty(videoCodec))
+            {
+                return videoCodec.ToUpperInvariant();
+            }
+            return null;
+        }
+    }
+}

@@ -1,0 +1,68 @@
+# A push to the "release" branch publishes the version in VERSION: it builds both plugins, runs the
+# tests, creates the GitHub release "v<version>" with the Emby DLL and the Jellyfin zip, and updates
+# manifest.json on the release branch (the URL Jellyfin users add as a plugin repository).
+# Bump VERSION before pushing; a version that already has a release fails on purpose.
+name: Release
+
+on:
+  push:
+    branches: [release]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Read version
+        id: v
+        run: |
+          V="$(tr -d ' \n' < VERSION)"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "full=$V.0" >> "$GITHUB_OUTPUT"
+          if gh release view "v$V" >/dev/null 2>&1; then
+            echo "Release v$V already exists: bump VERSION first." >&2
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Tests
+        run: |
+          dotnet test Emby.XtreamIptv.Tests/Emby.XtreamIptv.Tests.csproj -nologo -v q
+          dotnet test Jellyfin.Plugin.XtreamIptv.Tests/Jellyfin.Plugin.XtreamIptv.Tests.csproj -nologo -v q
+
+      - name: Build
+        run: |
+          ./build-emby.sh "${{ steps.v.outputs.version }}"
+          ./build-jellyfin.sh "${{ steps.v.outputs.version }}"
+
+      - name: Create release
+        run: |
+          gh release create "v${{ steps.v.outputs.version }}" \
+            --title "Xtream IPTV ${{ steps.v.outputs.version }}" \
+            --generate-notes \
+            "out/emby/Emby.XtreamIptv.dll#Emby plugin (Emby.XtreamIptv.dll)" \
+            "out/jellyfin/xtream-iptv-jellyfin_${{ steps.v.outputs.full }}.zip#Jellyfin plugin (zip)"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Update manifest
+        run: |
+          ABI="$(grep -o 'ABI="\${JELLYFIN_ABI:-[0-9.]*}"' build-jellyfin.sh | grep -o '[0-9][0-9.]*')"
+          URL="https://github.com/${{ github.repository }}/releases/download/v${{ steps.v.outputs.version }}/xtream-iptv-jellyfin_${{ steps.v.outputs.full }}.zip"
+          NOTES="https://github.com/${{ github.repository }}/releases/tag/v${{ steps.v.outputs.version }}"
+          python3 scripts/update-manifest.py manifest.json "${{ steps.v.outputs.full }}" "$ABI" \
+            "out/jellyfin/xtream-iptv-jellyfin_${{ steps.v.outputs.full }}.zip" "$URL" "$NOTES"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add manifest.json
+          git commit -m "manifest: v${{ steps.v.outputs.version }}"
+          git push

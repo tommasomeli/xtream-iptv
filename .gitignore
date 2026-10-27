@@ -1,0 +1,6 @@
+out/
+**/bin/
+**/obj/
+**/obj-*/
+**/bin-*/
+.impeccable/

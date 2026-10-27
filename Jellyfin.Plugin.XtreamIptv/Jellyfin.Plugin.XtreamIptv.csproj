@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>Jellyfin.Plugin.XtreamIptv</AssemblyName>
+    <RootNamespace>Jellyfin.Plugin.XtreamIptv</RootNamespace>
+    <Version>0.0.0-dev</Version>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DefineConstants>$(DefineConstants);JELLYFIN</DefineConstants>
+    <NoWarn>$(NoWarn);CS1591;CS0105</NoWarn>
+  </PropertyGroup>
+
+  <!-- Jellyfin 12.4 SDK; runtime assets excluded because the server provides them. -->
+  <ItemGroup>
+    <PackageReference Include="Jellyfin.Controller" Version="12.4.0">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="Jellyfin.Model" Version="12.4.0">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <!-- Host-neutral code shared with the Emby plugin. -->
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)../XtreamIptv.Shared/**/*.cs" />
+  </ItemGroup>
+
+  <!-- Parallel work: an agent builds without the areas it does not own, e.g. -c LiveTv -p:XtreamExclude="Catalog/**|Controllers/Catalog*.cs" (areas separated by a pipe, own configuration name so obj and bin do not collide) -->
+  <ItemGroup Condition="'$(XtreamExclude)' != ''">
+    <Compile Remove="$(XtreamExclude.Replace('|', ';'))" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="Configuration\configPage.html" />
+    <EmbeddedResource Include="Configuration\configPage.html" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>Jellyfin.Plugin.XtreamIptv.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>

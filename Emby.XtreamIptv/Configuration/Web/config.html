@@ -1,0 +1,471 @@
+<div is="emby-scroller"
+     class="view flex flex-direction-column scrollFrameY flex-grow"
+     data-horizontal="false"
+     data-forcescrollbar="true"
+     data-centerfocus="true"
+     data-bindheader="true"
+     data-controller="__plugin/xtreamiptvjs"
+     data-title="Xtream IPTV">
+
+  <div class="scrollSlider flex-grow flex-direction-column padded-left padded-left-page padded-right padded-top-page padded-bottom-page">
+    <form class="xtreamIptvForm auto-center">
+
+      <style>
+        .xtTabs {
+          display: flex;
+          gap: 0.25em;
+          border-bottom: 1px solid rgba(128,128,128,0.25);
+          margin-bottom: 1.5em;
+        }
+        .xtTab {
+          background: none;
+          border: none;
+          border-bottom: 2px solid transparent;
+          color: inherit;
+          cursor: pointer;
+          font: inherit;
+          font-size: 1em;
+          opacity: 0.7;
+          padding: 0.6em 1em;
+        }
+        .xtTab.active {
+          border-bottom-color: #52B54B;
+          opacity: 1;
+        }
+        .xtPanel { display: none; }
+        .xtPanel.active { display: block; }
+        .xtToolbar {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.4em;
+          align-items: center;
+          margin-bottom: 0.5em;
+        }
+        .xtFilter {
+          width: 100%;
+          box-sizing: border-box;
+          padding: 0.5em 0.8em;
+          background: transparent;
+          border: 1px solid rgba(128,128,128,0.25);
+          border-radius: 4px;
+          color: inherit;
+          font-size: 0.9em;
+          margin-bottom: 0.5em;
+        }
+        .xtCount {
+          font-size: 0.85em;
+          opacity: 0.75;
+          margin-bottom: 0.4em;
+        }
+        .xtList {
+          max-height: 380px;
+          overflow-y: auto;
+          border: 1px solid rgba(128,128,128,0.15);
+          border-radius: 4px;
+          padding: 0.5em;
+        }
+        .xtRow {
+          display: flex;
+          align-items: center;
+          cursor: pointer;
+          margin: 0.15em 0;
+        }
+        .xtRow input { margin-right: 0.5em; }
+        .xtMuted { opacity: 0.6; }
+        .xtResult { margin-top: 0.5em; min-height: 1em; }
+        .xtPill {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.5em;
+          padding: 0.4em 0.8em;
+          border-radius: 4px;
+          border-left: 3px solid;
+          font-size: 0.9em;
+        }
+        .xtPill.ok { border-color: #52B54B; background: rgba(82,181,75,0.08); }
+        .xtPill.err { border-color: #cc3333; background: rgba(204,51,51,0.08); }
+        .xtPill.info { border-color: #888; background: rgba(128,128,128,0.08); }
+        .xtStatusBox {
+          border: 1px solid rgba(128,128,128,0.2);
+          border-radius: 6px;
+          padding: 0.9em 1.1em;
+          margin: 0.8em 0;
+          line-height: 1.6;
+        }
+        .xtStatusBox code { font-size: 0.9em; }
+        .xtWarn { color: #e0a030; }
+        .xtNote {
+          border: 1px dashed rgba(128,128,128,0.35);
+          border-radius: 6px;
+          padding: 0.8em 1em;
+          margin-top: 1em;
+          line-height: 1.5;
+        }
+        .xtNote ul { margin: 0.4em 0 0 1.2em; padding: 0; }
+        .xtSave { margin-top: 1.5em; }
+      </style>
+
+      <div class="xtTabs">
+        <button type="button" class="xtTab active" data-tab="connection">Connection</button>
+        <button type="button" class="xtTab" data-tab="livetv">Live TV</button>
+        <button type="button" class="xtTab" data-tab="catalog">Catalogue</button>
+      </div>
+
+      <!-- ===== Connection ===== -->
+      <div class="xtPanel active" data-panel="connection">
+
+        <div class="verticalSection">
+          <h2 class="sectionTitle">Xtream server</h2>
+          <div class="inputContainer">
+            <input class="txtBaseUrl" type="text" is="emby-input" label="Server URL" placeholder="http://host:port" />
+            <div class="fieldDescription">Base URL of the Xtream account, without a trailing slash. With Dispatcharr, this is its Xtream output address.</div>
+          </div>
+          <div class="inputContainer">
+            <input class="txtUsername" type="text" is="emby-input" label="Username" autocomplete="off" />
+          </div>
+          <div class="inputContainer">
+            <input class="txtPassword" type="password" is="emby-input" label="Password" autocomplete="new-password" />
+          </div>
+          <div class="inputContainer">
+            <input class="txtHttpUserAgent" type="text" is="emby-input" label="HTTP User-Agent (optional)" />
+            <div class="fieldDescription">Sent on every request to the Xtream server. Leave empty unless the provider requires a specific player string.</div>
+          </div>
+          <button class="btnTestConnection raised button-secondary" is="emby-button" type="button"><span>Test connection</span></button>
+          <div class="xtResult connectionResult"></div>
+        </div>
+
+        <div class="verticalSection">
+          <h2 class="sectionTitle">Dispatcharr</h2>
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input class="chkEnableDispatcharr" type="checkbox" is="emby-checkbox" />
+              <span>Use Dispatcharr for Live TV</span>
+            </label>
+            <div class="fieldDescription checkboxFieldDescription">Reads channel profiles, stream stats and Gracenote station IDs from Dispatcharr.</div>
+          </div>
+
+          <div class="dispatcharrSettings">
+            <div class="inputContainer">
+              <input class="txtDispatcharrUrl" type="text" is="emby-input" label="Dispatcharr URL" placeholder="http://host:9191" />
+            </div>
+            <div class="inputContainer">
+              <input class="txtDispatcharrUser" type="text" is="emby-input" label="Dispatcharr username" autocomplete="off" />
+            </div>
+            <div class="inputContainer">
+              <input class="txtDispatcharrPass" type="password" is="emby-input" label="Dispatcharr password" autocomplete="new-password" />
+            </div>
+            <button class="btnTestDispatcharr raised button-secondary" is="emby-button" type="button"><span>Test Dispatcharr</span></button>
+            <div class="xtResult dispatcharrResult"></div>
+
+            <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top:1em;">
+              <label>
+                <input class="chkDispatcharrFallback" type="checkbox" is="emby-checkbox" />
+                <span>Play channels Dispatcharr does not know from the Xtream server</span>
+              </label>
+              <div class="fieldDescription checkboxFieldDescription">Turn off to make sure every stream goes through Dispatcharr.</div>
+            </div>
+
+            <div class="selectContainer">
+              <select class="selDispatcharrStreamEndpoint" is="emby-select" label="Stream URL">
+                <option value="proxy">Dispatcharr proxy (default)</option>
+                <option value="xtream">Xtream server (credentials above)</option>
+              </select>
+              <div class="fieldDescription">With the proxy, Dispatcharr lists Emby as an anonymous client. The Xtream option plays through the account above, so Dispatcharr shows that user and applies its stream limits. It only takes effect when the Xtream server is the Dispatcharr server.</div>
+              <div class="fieldDescription xtWarn streamEndpointWarning" style="display:none;">The Xtream server URL and the Dispatcharr URL are not the same address, so the proxy will still be used.</div>
+            </div>
+
+            <div class="selectContainer">
+              <select class="selDispatcharrCodecSource" is="emby-select" label="Video codec for Dispatcharr channels">
+                <option value="auto">Automatic (recommended)</option>
+                <option value="stats">Codec reported by Dispatcharr stats</option>
+                <option value="h264">Always H.264</option>
+                <option value="hevc">Always HEVC</option>
+              </select>
+              <div class="fieldDescription">Change this only if a Dispatcharr channel plays with the wrong codec.</div>
+            </div>
+
+            <h3 class="sectionTitle" style="font-size:1em; margin-top:1.2em;">Channel profiles</h3>
+            <div class="fieldDescription" style="margin-bottom:0.6em;">Only channels enabled in at least one ticked profile appear in Emby. Tick none to show all channels.</div>
+            <div class="xtToolbar">
+              <button class="btnRefreshProfiles raised button-secondary" is="emby-button" type="button"><span>Refresh profiles</span></button>
+              <button class="btnProfilesAll raised button-secondary" is="emby-button" type="button" disabled><span>Select all</span></button>
+              <button class="btnProfilesNone raised button-secondary" is="emby-button" type="button" disabled><span>Select none</span></button>
+            </div>
+            <div class="xtCount profilesCount"></div>
+            <div class="xtList profilesList"><div class="xtMuted">Click "Refresh profiles" to load.</div></div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ===== Live TV ===== -->
+      <div class="xtPanel" data-panel="livetv">
+
+        <div class="verticalSection">
+          <h2 class="sectionTitle">Live TV</h2>
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input class="chkEnableLiveTv" type="checkbox" is="emby-checkbox" />
+              <span>Enable Live TV</span>
+            </label>
+            <div class="fieldDescription checkboxFieldDescription">Serves the Xtream channels to the Emby tuner.</div>
+          </div>
+        </div>
+
+        <div class="liveTvSettings">
+
+          <div class="verticalSection">
+            <h2 class="sectionTitle">Channels</h2>
+            <div class="fieldDescription" style="margin-bottom:0.6em;">Tick the Live TV categories to include. Tick none to include every channel.</div>
+            <div class="xtPicker" data-kind="live">
+              <div class="xtToolbar">
+                <button class="btnPickerRefresh raised button-secondary" is="emby-button" type="button"><span>Refresh categories</span></button>
+                <button class="btnPickerAll raised button-secondary" is="emby-button" type="button" disabled><span>Select all</span></button>
+                <button class="btnPickerNone raised button-secondary" is="emby-button" type="button" disabled><span>Select none</span></button>
+              </div>
+              <input type="text" class="xtFilter pickerFilter" placeholder="Filter categories" />
+              <div class="xtCount pickerCount"></div>
+              <div class="xtList pickerList"><div class="xtMuted">Click "Refresh categories" to load.</div></div>
+            </div>
+            <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top:0.8em;">
+              <label>
+                <input class="chkIncludeAdultChannels" type="checkbox" is="emby-checkbox" />
+                <span>Include adult channels</span>
+              </label>
+            </div>
+            <div class="checkboxContainer checkboxContainer-withDescription">
+              <label>
+                <input class="chkEnableChannelNameCleaning" type="checkbox" is="emby-checkbox" />
+                <span>Clean channel names</span>
+              </label>
+              <div class="fieldDescription checkboxFieldDescription">Removes quality tags and the terms below from channel names.</div>
+            </div>
+            <div class="inputContainer channelCleaningSettings">
+              <input class="txtChannelRemoveTerms" type="text" is="emby-input" label="Terms to remove (comma-separated)" placeholder="IT:, |IT|, VIP" />
+            </div>
+          </div>
+
+          <div class="verticalSection">
+            <h2 class="sectionTitle">Guide</h2>
+            <div class="selectContainer">
+              <select class="selEpgSource" is="emby-select" label="Guide source">
+                <option value="0">Xtream server</option>
+                <option value="1">Custom XMLTV URL</option>
+                <option value="2">Disabled</option>
+              </select>
+              <div class="fieldDescription">Custom URL: any XMLTV feed, for example Dispatcharr's /output/epg. Disabled: no guide from this plugin, use it when an XMLTV source is already set in Emby's Live TV settings.</div>
+            </div>
+            <div class="inputContainer epgCustomUrlSettings">
+              <input class="txtCustomEpgUrl" type="url" is="emby-input" label="Custom guide URL" />
+            </div>
+            <div class="checkboxContainer checkboxContainer-withDescription epgSettings">
+              <label>
+                <input class="chkDeferEpgToGuideData" type="checkbox" is="emby-checkbox" />
+                <span>Use Emby Guide Data for channels with a Gracenote ID (Emby Premiere)</span>
+              </label>
+              <div class="fieldDescription checkboxFieldDescription">Turn off without Emby Premiere.</div>
+            </div>
+            <div class="inputContainer">
+              <input class="txtEpgDaysToFetch" type="number" is="emby-input" label="Guide days to fetch" min="1" max="14" step="1" />
+            </div>
+            <div class="inputContainer">
+              <input class="txtEpgCacheMinutes" type="number" is="emby-input" label="Guide cache (minutes)" min="5" max="1440" step="5" />
+            </div>
+            <div class="inputContainer">
+              <input class="txtM3UCacheMinutes" type="number" is="emby-input" label="Channel list cache (minutes)" min="1" max="1440" step="1" />
+            </div>
+          </div>
+
+          <div class="verticalSection">
+            <h2 class="sectionTitle">Playback</h2>
+            <div class="selectContainer">
+              <select class="selOutputFormat" is="emby-select" label="Stream format">
+                <option value="ts">MPEG-TS (.ts)</option>
+                <option value="m3u8">HLS (.m3u8)</option>
+              </select>
+              <div class="fieldDescription">MPEG-TS gives the lowest latency.</div>
+            </div>
+            <div class="checkboxContainer checkboxContainer-withDescription">
+              <label>
+                <input class="chkDeclareDvbSubtitles" type="checkbox" is="emby-checkbox" />
+                <span>Declare DVB subtitles</span>
+              </label>
+              <div class="fieldDescription checkboxFieldDescription">Shows DVB subtitles in Emby. Channels without them get an empty subtitle track.</div>
+            </div>
+            <div class="checkboxContainer checkboxContainer-withDescription">
+              <label>
+                <input class="chkForceAudioTranscode" type="checkbox" is="emby-checkbox" />
+                <span>Force audio transcoding</span>
+              </label>
+              <div class="fieldDescription checkboxFieldDescription">Converts AC3 and EAC3 to AAC. Fixes silent audio on iPhone and iPad, but disables Dolby passthrough elsewhere.</div>
+            </div>
+            <div class="inputContainer">
+              <input class="txtFallbackTranscodeBitrate" type="number" is="emby-input" label="Transcode bitrate cap (Mbps)" min="0" max="200" step="1" />
+              <div class="fieldDescription">0 = no cap. Set it below the hardware encoder limit (for example 8) when transcoding falls back to software with "Bitrate exceeds maximum supported rate".</div>
+            </div>
+          </div>
+
+          <div class="verticalSection">
+            <h2 class="sectionTitle">Maintenance</h2>
+            <div class="xtToolbar">
+              <button class="btnRefreshCache raised button-secondary" is="emby-button" type="button"><span>Refresh channel and guide cache</span></button>
+              <button class="btnSyncGuideMappings raised button-secondary" is="emby-button" type="button"><span>Sync guide mappings</span></button>
+            </div>
+            <div class="fieldDescription">Guide mappings are synced automatically after every channel refresh. Run it by hand only if Gracenote guide data stopped showing for Dispatcharr channels.</div>
+            <div class="xtResult maintenanceResult"></div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ===== Catalogue ===== -->
+      <div class="xtPanel" data-panel="catalog">
+
+        <div class="verticalSection">
+          <h2 class="sectionTitle">Catalogue</h2>
+          <div class="fieldDescription" style="margin-bottom:0.8em;">Movies and series from the Xtream lists are added straight to the Emby libraries below, without files. Series episodes and movie detail are loaded when a title is opened. A daily scheduled task keeps the lists up to date; Sync now runs it immediately.</div>
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input class="chkSyncMovies" type="checkbox" is="emby-checkbox" />
+              <span>Sync movies</span>
+            </label>
+          </div>
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input class="chkSyncSeries" type="checkbox" is="emby-checkbox" />
+              <span>Sync series</span>
+            </label>
+          </div>
+          <div class="inputContainer">
+            <input class="txtLibraryPath" type="text" is="emby-input" label="Library folder" placeholder="/config/xtream" />
+            <div class="fieldDescription">Two empty folders, Movies/ and Shows/, are created inside it: they are the locations of the two Emby libraries and stay empty.</div>
+          </div>
+          <button class="btnValidatePath raised button-secondary" is="emby-button" type="button"><span>Validate</span></button>
+          <div class="xtResult pathResult"></div>
+        </div>
+
+        <div class="verticalSection movieSettings">
+          <h2 class="sectionTitle">Movie categories</h2>
+          <div class="fieldDescription" style="margin-bottom:0.6em;">Tick the categories to sync. Tick none to sync every movie category.</div>
+          <div class="xtPicker" data-kind="vod">
+            <div class="xtToolbar">
+              <button class="btnPickerRefresh raised button-secondary" is="emby-button" type="button"><span>Refresh categories</span></button>
+              <button class="btnPickerAll raised button-secondary" is="emby-button" type="button" disabled><span>Select all</span></button>
+              <button class="btnPickerNone raised button-secondary" is="emby-button" type="button" disabled><span>Select none</span></button>
+            </div>
+            <input type="text" class="xtFilter pickerFilter" placeholder="Filter categories" />
+            <div class="xtCount pickerCount"></div>
+            <div class="xtList pickerList"><div class="xtMuted">Click "Refresh categories" to load.</div></div>
+          </div>
+        </div>
+
+        <div class="verticalSection seriesSettings">
+          <h2 class="sectionTitle">Series categories</h2>
+          <div class="fieldDescription" style="margin-bottom:0.6em;">Tick the categories to sync. Tick none to sync every series category.</div>
+          <div class="xtPicker" data-kind="series">
+            <div class="xtToolbar">
+              <button class="btnPickerRefresh raised button-secondary" is="emby-button" type="button"><span>Refresh categories</span></button>
+              <button class="btnPickerAll raised button-secondary" is="emby-button" type="button" disabled><span>Select all</span></button>
+              <button class="btnPickerNone raised button-secondary" is="emby-button" type="button" disabled><span>Select none</span></button>
+            </div>
+            <input type="text" class="xtFilter pickerFilter" placeholder="Filter categories" />
+            <div class="xtCount pickerCount"></div>
+            <div class="xtList pickerList"><div class="xtMuted">Click "Refresh categories" to load.</div></div>
+          </div>
+        </div>
+
+        <div class="verticalSection">
+          <h2 class="sectionTitle">Options</h2>
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input class="chkIncludeAdultContent" type="checkbox" is="emby-checkbox" />
+              <span>Include adult content</span>
+            </label>
+            <div class="fieldDescription checkboxFieldDescription">Keeps titles flagged as adult and categories with adult words in their name.</div>
+          </div>
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input class="chkAutoIncludeNewCategories" type="checkbox" is="emby-checkbox" />
+              <span>Include new categories automatically</span>
+            </label>
+            <div class="fieldDescription checkboxFieldDescription">When you have picked categories below, a movie or series category the provider adds later (a new saga, a new channel of films) joins your selection at the next sync instead of staying out. Categories matching the excluded terms never join.</div>
+          </div>
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input class="chkMergeMovieVersions" type="checkbox" is="emby-checkbox" />
+              <span>Merge movie versions</span>
+            </label>
+            <div class="fieldDescription checkboxFieldDescription">Releases of the same title that differ only by quality tag become one movie with a version picker.</div>
+          </div>
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input class="chkDetailOnOpen" type="checkbox" is="emby-checkbox" />
+              <span>Fetch movie detail on open</span>
+            </label>
+            <div class="fieldDescription checkboxFieldDescription">Plot, cast and backdrop of a movie, and the cast and episodes of a series, are fetched from the provider the first time the title is opened. The sync writes titles only.</div>
+          </div>
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input class="chkActorPhotosOnOpen" type="checkbox" is="emby-checkbox" />
+              <span>Actor photos on open</span>
+            </label>
+            <div class="fieldDescription checkboxFieldDescription">Xtream has no actor photos. When a title is opened, the actors of its cast that have none yet are refreshed in the background by Emby's own person providers (TheMovieDb), at most 15 per title, three at a time; the open page refreshes when they land. Each actor is fetched once and shared by every title.</div>
+          </div>
+          <div class="inputContainer">
+            <input class="txtDetailWaitSeconds" type="number" is="emby-input" label="Wait for the provider on open (seconds)" min="0" max="30" step="1" />
+            <div class="fieldDescription">The detail page waits this long for the provider so it opens complete. Past it the page opens with what is there and refreshes by itself when the detail arrives.</div>
+          </div>
+          <div class="inputContainer">
+            <input class="txtExcludedCategoryTerms" type="text" is="emby-input" label="Categories to leave out (comma-separated terms)" placeholder="Karaoke, Concerti" />
+            <div class="fieldDescription">Movie and series categories whose name contains one of these terms are skipped, whatever the selection below; their titles are removed at the next sync.</div>
+          </div>
+          <div class="inputContainer">
+            <input class="txtContentRemoveTerms" type="text" is="emby-input" label="Terms to remove from titles (comma-separated)" placeholder="IT -, [MULTI], DUAL" />
+            <div class="fieldDescription">Removed in addition to the built-in quality tags (FHD, 4K, HEVC, 1080p and so on).</div>
+          </div>
+          <div class="inputContainer">
+            <input class="txtSyncParallelism" type="number" is="emby-input" label="Concurrent series detail requests" min="1" max="16" step="1" />
+          </div>
+          <div class="inputContainer">
+            <input class="txtXtreamRequestsPerSecond" type="number" is="emby-input" label="Xtream requests per second (0 = unlimited)" min="0" max="100" step="1" />
+          </div>
+          <div class="inputContainer">
+            <input class="txtRemovalSafetyThreshold" type="number" is="emby-input" label="Removal safety threshold (%)" min="0" max="100" step="1" />
+            <div class="fieldDescription">A sync never removes more than this share of the existing titles in one run, so a provider glitch cannot empty the library.</div>
+          </div>
+        </div>
+
+        <div class="verticalSection">
+          <h2 class="sectionTitle">Sync</h2>
+          <div class="xtToolbar">
+            <button class="btnSyncNow raised button-submit" is="emby-button" type="button"><span>Sync now</span></button>
+            <button class="btnRefreshStatus raised button-secondary" is="emby-button" type="button"><span>Refresh status</span></button>
+          </div>
+          <div class="xtResult syncResult"></div>
+          <div class="xtStatusBox catalogStatus">
+            <div><strong>Status:</strong> <span class="statusState xtMuted">Not loaded</span></div>
+            <div class="statusProgressRow" style="display:none;"><strong>Progress:</strong> <span class="statusProgress"></span></div>
+            <div><strong>Last run:</strong> <span class="statusLastRun xtMuted">Never</span></div>
+            <div><strong>Last summary:</strong> <span class="statusSummary xtMuted">None</span></div>
+            <div><strong>Movies, series and episodes currently in the Emby libraries:</strong> <span class="statusCounts xtMuted">Unknown</span></div>
+          </div>
+
+          <div class="xtNote">
+            <strong>Emby libraries to add</strong> (Settings, Library, Add media library):
+            <ul>
+              <li>Movies library named "Film": folder <code class="libMoviesPath">/config/xtream/Movies</code></li>
+              <li>TV shows library named "Serie": folder <code class="libShowsPath">/config/xtream/Shows</code></li>
+            </ul>
+            Required library options for both: no metadata fetchers, no image fetchers, images in advance off.
+          </div>
+        </div>
+
+      </div>
+
+      <div class="xtSave">
+        <button is="emby-button" type="submit" class="raised button-submit block"><span>Save</span></button>
+      </div>
+
+    </form>
+  </div>
+</div>
